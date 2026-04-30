@@ -1,0 +1,59 @@
+name: Build Mnemori
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Patch electron-builder symlink issue (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: node scripts/patch-builder.js
+
+      - name: Build
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run build
+
+      - name: Upload Windows installer
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mnemori-Windows-Installer
+          path: dist/Mnemori Setup *.exe
+          if-no-files-found: error
+
+      - name: Upload Windows portable
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mnemori-Windows-Portable
+          path: dist/Mnemori *.exe
+          if-no-files-found: warn
+
+      - name: Upload macOS DMG
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mnemori-macOS
+          path: dist/*.dmg
+          if-no-files-found: error
