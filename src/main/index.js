@@ -664,8 +664,32 @@ async function extractInsights(recordingId) {
 
 // ---- API helpers ----
 
+let _defaultKeys = null;
+function getDefaultKeys() {
+  if (_defaultKeys !== null) return _defaultKeys;
+  try {
+    const keysPath = path.join(__dirname, 'default-keys.json');
+    if (fs.existsSync(keysPath)) {
+      _defaultKeys = JSON.parse(fs.readFileSync(keysPath, 'utf-8'));
+    } else {
+      _defaultKeys = {};
+    }
+  } catch (_) {
+    _defaultKeys = {};
+  }
+  return _defaultKeys;
+}
+
+function getOpenAIKey() {
+  return getSetting('openaiApiKey') || getDefaultKeys().openai || '';
+}
+
+function getAnthropicKey() {
+  return getSetting('anthropicApiKey') || getDefaultKeys().anthropic || '';
+}
+
 async function transcribeAudio(wavPath) {
-  const apiKey = getSetting('openaiApiKey');
+  const apiKey = getOpenAIKey();
   if (!apiKey) throw new Error('OpenAI API key not configured. Add it in Administration.');
 
   let result;
@@ -697,7 +721,7 @@ async function transcribeAudio(wavPath) {
 }
 
 async function generateWithClaude(text, mode, customPrompt = null, screenshotContext = null) {
-  const apiKey = getSetting('anthropicApiKey');
+  const apiKey = getAnthropicKey();
   if (!apiKey) throw new Error('Anthropic API key not configured. Add it in Administration.');
 
   const prompt = customPrompt || PROMPTS[mode];
@@ -1461,7 +1485,7 @@ ipcMain.handle('pipeline:generate', async (_evt, id, mode) => {
 
 ipcMain.handle('pipeline:transcribeBlob', async (_evt, arrayBuf) => {
   try {
-    const apiKey = getSetting('openaiApiKey');
+    const apiKey = getOpenAIKey();
     if (!apiKey) return { ok: false, error: 'OpenAI API key not configured. Add it in Administration.' };
 
     const tmpPath = path.join(app.getPath('temp'), `mnemori-voice-${Date.now()}.webm`);

@@ -135,8 +135,9 @@ export default function Admin() {
           <div className="field-group">
             <h3>API keys</h3>
             <p className="help">
-              Stored locally on this machine, encrypted at rest using your operating system's
-              secure credential store. Used for transcription and document generation.
+              During early access, default keys are provided — you can start transcribing and generating
+              right away. To use your own keys instead, enter them below. Keys are stored locally,
+              encrypted at rest using your operating system's secure credential store.
             </p>
             <div className="field">
               <label>OpenAI (Whisper transcription)</label>

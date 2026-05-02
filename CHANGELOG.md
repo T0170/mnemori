@@ -4,6 +4,17 @@ All notable changes to Mnemori are documented here. Format follows [Keep a Chang
 
 ---
 
+## [0.3.1] — 2026-05-01
+
+### Added
+- **Bundled API keys for early access** — CI builds inject default OpenAI and Anthropic keys from GitHub Secrets. Users can start transcribing and generating immediately without configuring their own keys. User-configured keys take priority when present.
+
+### Fixed
+- **CI release tagging** — Version extraction switched from `node -p` (broken nested quoting on Ubuntu) to `jq` for reliable `v0.3.x` tags.
+- **Download button routing** — Releases marked as non-prerelease so GitHub's `/releases/latest` URL resolves correctly for the marketing site download buttons.
+
+---
+
 ## [0.3.0] — 2026-05-01
 
 ### Added

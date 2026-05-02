@@ -29,6 +29,14 @@ jobs:
         shell: bash
         run: node scripts/patch-builder.js
 
+      - name: Inject default API keys
+        if: env.DEFAULT_OPENAI_KEY != ''
+        env:
+          DEFAULT_OPENAI_KEY: ${{ secrets.DEFAULT_OPENAI_KEY }}
+          DEFAULT_ANTHROPIC_KEY: ${{ secrets.DEFAULT_ANTHROPIC_KEY }}
+        run: |
+          echo "{\"openai\":\"$DEFAULT_OPENAI_KEY\",\"anthropic\":\"$DEFAULT_ANTHROPIC_KEY\"}" > src/main/default-keys.json
+
       - name: Build
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: "false"

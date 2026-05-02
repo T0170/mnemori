@@ -8,3 +8,4 @@ __pycache__/
 *.pyc
 *.db
 *.sqlite
+src/main/default-keys.json
