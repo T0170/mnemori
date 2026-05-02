@@ -4,7 +4,7 @@ import { useAuth } from '../lib/auth';
 import RecordingControl from './RecordingControl';
 
 export default function Sidebar({ onRecordingChanged }) {
-  const { isSignedIn, user, roleName, can, signIn, signOut } = useAuth();
+  const { isSignedIn, user, roleName, can, signIn, signOut, requireAuth } = useAuth();
   const [quickSearch, setQuickSearch] = useState('');
   const navigate = useNavigate();
 
@@ -84,7 +84,14 @@ export default function Sidebar({ onRecordingChanged }) {
       </div>
 
       <div className="sidebar-footer">
-        <RecordingControl onChanged={onRecordingChanged} />
+        {requireAuth ? (
+          <div style={{ padding: '12px 0', textAlign: 'center' }}>
+            <p style={{ fontSize: 13, color: 'var(--ink-3)', marginBottom: 8 }}>Sign in to start recording</p>
+            <button className="btn btn-primary btn-sm" onClick={signIn}>Sign in</button>
+          </div>
+        ) : (
+          <RecordingControl onChanged={onRecordingChanged} />
+        )}
       </div>
     </aside>
   );

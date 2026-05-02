@@ -1242,6 +1242,31 @@ app.whenReady().then(() => {
   if (!hkResult.ok) console.warn('Hotkey registration failed:', hkResult.error);
 
   auditLog('app:start', null, `v${app.getVersion()} ${process.platform} ${process.arch}`);
+
+  // Remote config — allows server-side kill switch for requiring auth
+  try {
+    const https = require('https');
+    https.get('https://mnemori.app/config.json', (res) => {
+      let body = '';
+      res.on('data', (d) => { body += d; });
+      res.on('end', () => {
+        try {
+          const config = JSON.parse(body);
+          if (config.requireAuth) {
+            setSetting('remoteRequireAuth', 'true');
+          } else {
+            setSetting('remoteRequireAuth', '');
+          }
+          if (config.message) {
+            setSetting('remoteMessage', config.message);
+          } else {
+            setSetting('remoteMessage', '');
+          }
+          mainWindow?.webContents.send('recordings:changed');
+        } catch (_) {}
+      });
+    }).on('error', () => {});
+  } catch (_) {}
 });
 
 app.on('window-all-closed', () => {
@@ -1263,9 +1288,14 @@ app.on('will-quit', () => {
   try { db.close(); } catch (_) {}
 });
 
+function isAuthGated() {
+  return getSetting('remoteRequireAuth') === 'true' && !getSetting('clerkUserId');
+}
+
 // ---- IPC: Recording ----
 
 ipcMain.handle('recording:start', async (_evt, options = {}) => {
+  if (isAuthGated()) return { ok: false, error: 'Sign in required to record' };
   return doStartRecording(options);
 });
 
@@ -1360,6 +1390,7 @@ ipcMain.handle('recordings:update', (_evt, id, updates) => {
 // ---- IPC: Pipeline (transcribe + generate) ----
 
 ipcMain.handle('pipeline:transcribe', async (_evt, id) => {
+  if (isAuthGated()) return { ok: false, error: 'Sign in required' };
   const rec = db.prepare('SELECT * FROM recordings WHERE id = ?').get(id);
   if (!rec) return { ok: false, error: 'Recording not found' };
 
@@ -1398,6 +1429,7 @@ ipcMain.handle('pipeline:transcribe', async (_evt, id) => {
 });
 
 ipcMain.handle('pipeline:generate', async (_evt, id, mode) => {
+  if (isAuthGated()) return { ok: false, error: 'Sign in required' };
   const rec = db.prepare('SELECT * FROM recordings WHERE id = ?').get(id);
   if (!rec || !rec.transcript_path) return { ok: false, error: 'No transcript available' };
 
@@ -1451,7 +1483,7 @@ ipcMain.handle('pipeline:transcribeBlob', async (_evt, arrayBuf) => {
 
 // ---- IPC: Settings ----
 
-const ALLOWED_SETTINGS = new Set(['audioDevice', 'openaiApiKey', 'anthropicApiKey', 'retentionDays', 'clerkUserId', 'clerkUserRole', 'globalHotkey', 'autoTranscribe', 'autoGenerateMode', 'conceptsAutoExtract', 'storagePath', 'policyAutoPipelineDisabled', 'policyConceptsDisabled']);
+const ALLOWED_SETTINGS = new Set(['audioDevice', 'openaiApiKey', 'anthropicApiKey', 'retentionDays', 'clerkUserId', 'clerkUserRole', 'globalHotkey', 'autoTranscribe', 'autoGenerateMode', 'conceptsAutoExtract', 'storagePath', 'policyAutoPipelineDisabled', 'policyConceptsDisabled', 'remoteRequireAuth', 'remoteMessage']);
 
 // Settings that require owner or admin role to modify
 const ADMIN_ONLY_SETTINGS = new Set(['openaiApiKey', 'anthropicApiKey', 'retentionDays', 'storagePath', 'policyAutoPipelineDisabled', 'policyConceptsDisabled']);

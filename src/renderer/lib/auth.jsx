@@ -1,10 +1,22 @@
-import React, { createContext, useContext, useState, useCallback, useMemo } from 'react';
+import React, { createContext, useContext, useState, useCallback, useMemo, useEffect } from 'react';
 import { normalizeRole, can as checkCan, getRoleName } from './permissions';
 
 const AuthContext = createContext(null);
 const AUTH_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 export function AuthProvider({ children }) {
+  const [remoteRequireAuth, setRemoteRequireAuth] = useState(false);
+
+  useEffect(() => {
+    async function check() {
+      const val = await window.api.settings.get('remoteRequireAuth');
+      setRemoteRequireAuth(val === 'true');
+    }
+    check();
+    const unsub = window.api.recordings.onChanged(check);
+    return unsub;
+  }, []);
+
   const [identity, setIdentity] = useState(() => {
     try {
       const stored = localStorage.getItem('mnemori:identity');
@@ -48,7 +60,8 @@ export function AuthProvider({ children }) {
     can,
     signIn,
     signOut,
-  }), [identity, normalized, role, can, signIn, signOut]);
+    requireAuth: remoteRequireAuth && !identity,
+  }), [identity, normalized, role, can, signIn, signOut, remoteRequireAuth]);
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
