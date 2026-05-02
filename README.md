@@ -18,7 +18,7 @@ mnemori/
 ├── vite.config.js            renderer build config
 ├── src/
 │   ├── main/
-│   │   ├── index.js          electron main process — recording, db, IPC
+│   │   ├── index.js          electron main process — recording, db, IPC, API calls
 │   │   └── preload.js        secure bridge to the renderer
 │   └── renderer/             react UI
 │       ├── index.html
@@ -27,11 +27,14 @@ mnemori/
 │       ├── styles.css        full design system
 │       ├── components/       Sidebar, RecordingControl
 │       ├── pages/            Library, RecordingDetail, Settings, Concepts, Projects
-│       └── lib/              toast, formatters
-└── python-backend/           transcribe.py + document.py (called by Electron)
+│       └── lib/              auth, permissions, toast, formatters
+├── compliance/               IDENTITY_MODEL.md, SHARED_RESPONSIBILITY.md
+├── CHANGELOG.md
+├── SECURITY.md
+└── BRAND.md
 ```
 
-The Electron main process owns recording (spawns ffmpeg), the local SQLite database, and shells out to Python for transcription and AI generation. The renderer is a React app that talks to it through a typed-ish IPC bridge in `preload.js`.
+The Electron main process owns recording (spawns ffmpeg), the local SQLite database, and calls OpenAI Whisper and Anthropic Claude APIs directly via their Node.js SDKs. The renderer is a React app that talks to it through a typed IPC bridge in `preload.js`.
 
 ---
 
@@ -39,14 +42,12 @@ The Electron main process owns recording (spawns ffmpeg), the local SQLite datab
 
 ### 1. Prerequisites
 - **Node.js 18+** — https://nodejs.org/
-- **Python 3.10+** — https://www.python.org/downloads/ (check "Add to PATH" during install)
 - **ffmpeg** — `winget install ffmpeg` then restart your terminal
 
 ### 2. Install dependencies
 ```powershell
 cd mnemori
 npm install
-pip install -r python-backend/requirements.txt
 ```
 
 `better-sqlite3` may need to rebuild against Electron's Node version. If you see errors:
@@ -66,7 +67,7 @@ Open **Settings** in the sidebar:
 - Paste your **OpenAI** key (for Whisper transcription) and **Anthropic** key (for Claude documentation)
 - Hit **Save**
 
-You're ready. Press **Start Recording** in the sidebar, narrate what you're doing, then **Stop**. The recording lands in the Library. Click into it, hit **Transcribe audio**, then generate any combination of SOP / Coaching / Notes.
+You're ready. Press **Start Recording** in the sidebar, narrate what you're doing, then **Stop**. The recording lands in the Library. Click into it, hit **Transcribe audio**, then generate any combination of SOP / Coaching / Methodology / Notes.
 
 ---
 
@@ -82,7 +83,7 @@ When writing about Mnemori — in marketing, documentation, anywhere the name ap
 
 ### Voice and tone
 
-Mnemori is editorial, considered, slightly literary. It's not chirpy or salesy. Empty states say "Nothing remembered yet," not "No recordings — get started!" Buttons say "Start Recording," not "🎬 START NOW!". The product respects the user's attention and intelligence.
+Mnemori is editorial, considered, slightly literary. It's not chirpy or salesy. Empty states say "Nothing remembered yet," not "No recordings — get started!" Buttons say "Start Recording," not "START NOW!". The product respects the user's attention and intelligence.
 
 When in doubt: how would a quiet, confident craft tool talk?
 
@@ -91,59 +92,55 @@ When in doubt: how would a quiet, confident craft tool talk?
 ## How the pieces fit together
 
 ```
-┌─────────────────────┐        IPC         ┌──────────────────────┐
-│   React renderer    │ ◀────────────────▶ │  Electron main       │
-│   (UI, no OS access)│   (preload.js)     │  - SQLite (metadata) │
-└─────────────────────┘                    │  - spawn ffmpeg      │
-                                           │  - spawn python      │
-                                           └──────┬───────┬───────┘
-                                                  │       │
-                                            ┌─────▼──┐ ┌──▼────────┐
-                                            │ ffmpeg │ │ python    │
-                                            │ rec    │ │ (Whisper, │
-                                            │        │ │  Claude)  │
-                                            └────────┘ └───────────┘
+Renderer (React)  <--IPC (preload.js)-->  Main (Electron)
+  UI, no OS access                          SQLite, ffmpeg, OpenAI SDK, Anthropic SDK
 ```
 
 The renderer never touches the file system or shells out directly — that's the security model Electron is built around. Every action goes through `window.api.*` (defined in `preload.js`), which forwards to handlers in `src/main/index.js`.
 
 ---
 
-## What works in v1
+## What works (v0.2.0)
 
 - Recording from a sidebar control (start/stop, live timer)
-- Local SQLite library with status tracking (recorded → transcribing → ready)
+- Local SQLite library with status tracking (recorded > transcribing > ready)
 - Per-recording detail view: video player, transcript, generated artifacts
-- Three generation modes: SOP, Coaching review, Cleaned notes
+- Four generation modes: SOP, Coaching review, Methodology, Cleaned notes
 - Project tagging and free-form tags on each recording
-- Settings: mic selection (auto-detected via ffmpeg), API key storage
+- Markdown rendering for generated artifacts
+- Copy to clipboard for transcripts and artifacts
+- Settings: mic selection (auto-detected via ffmpeg), encrypted API key storage
 - Click-to-show-in-folder, delete with confirmation
+- Optional Clerk authentication with role-based permissions (Owner/Admin/Member)
+- Browser-based sign-in flow (opens mnemori.app/auth.html in a modal window)
+- Audit logging for security-relevant actions
+- Secure file deletion with zero-fill overwrite
+- Configurable data retention with auto-delete
+- CI/CD pipeline (GitHub Actions builds Windows installer + macOS .dmg)
 - Editorial design system, Fraunces typography, real polish
 
 ---
 
 ## Roadmap
 
-**Near-term (v1.x)**
+**Near-term**
 1. **Global hotkey for record start/stop** — works even when the app is in the background. `globalShortcut` in main, plus a tiny floating overlay window showing the timer
 2. **Synced transcript playback** — clicking a transcript segment seeks the video; the active segment highlights as the video plays
-3. **Markdown rendering for artifacts** — currently plain text; render with `react-markdown` for headings, lists
-4. **Export artifact** — copy to clipboard, save as .md, or "open in editor"
-5. **Re-run generation with a custom prompt** — modal where you can tweak the prompt before regenerating
+3. **Export artifact to file** — save as .md via `dialog.showSaveDialog` (clipboard copy already works)
+4. **Re-run generation with a custom prompt** — modal where you can tweak the prompt before regenerating
 
-**Mid-term (v2)**
-6. **Concepts page** — run a Claude pass over each transcript that extracts mentioned concepts/techniques as JSON, store in a `concepts` table, link back to the moments they appear
-7. **Projects page** — group recordings, see all artifacts in one place, export bundle
-8. **Search** — full-text across transcripts and artifacts (SQLite FTS5 is built in)
-9. **Auto-pipeline option** — toggle "auto-transcribe and auto-generate SOP after recording stops"
-10. **Airtable export** — push recordings + artifacts to a base
+**Mid-term**
+5. **Concepts page** — run a Claude pass over each transcript that extracts mentioned concepts/techniques as JSON, store in a `concepts` table, link back to the moments they appear
+6. **Projects page** — group recordings, see all artifacts in one place, export bundle
+7. **Search** — full-text across transcripts and artifacts (SQLite FTS5 is built in)
+8. **Auto-pipeline option** — toggle "auto-transcribe and auto-generate SOP after recording stops"
+9. **Airtable export** — push recordings + artifacts to a base
 
-**Long-term (v3 / SaaS-ready)**
-11. **Auto-update** — `electron-updater` so beta users get fixes without reinstalling
-12. **Code signing** — a Windows installer that doesn't trigger SmartScreen
-13. **Optional cloud backup** — encrypted sync of metadata + artifacts (not video). Opt-in
-14. **Team workspace** — multiple users, shared concept libraries, review queues. The SaaS pivot point
-15. **Replace Python backend with Node** — calling Whisper and Claude from Node directly removes the Python dependency
+**Long-term (SaaS-ready)**
+10. **Auto-update** — `electron-updater` so beta users get fixes without reinstalling
+11. **Code signing** — a Windows installer that doesn't trigger SmartScreen
+12. **Optional cloud backup** — encrypted sync of metadata + artifacts (not video). Opt-in
+13. **Team workspace** — multiple users, shared concept libraries, review queues. The SaaS pivot point
 
 ---
 
@@ -154,7 +151,7 @@ A few choices in this codebase are deliberate to make a future web/SaaS version 
 - **All UI is web tech** (React + plain CSS). Drops into a Next.js app unchanged
 - **The renderer never assumes Electron** — it only talks to `window.api`. Swap that for a `fetch('/api/...')` layer in a web build and the same components work
 - **Database access is centralized** in main process handlers. Translates 1:1 to API endpoints
-- **Python backend is stateless** — given a file path and a key, it does its job. Containerize it, put it behind a queue, you're done
+- **API calls are in the main process** — OpenAI and Anthropic SDKs are called from Node.js. Move them behind an API gateway for multi-tenant usage
 
 If Mnemori grows into a real product, the path is: keep the desktop app for power users (capture has to be local), add a web companion for review and sharing, build the team layer there. Don't try to make the desktop app multi-tenant.
 
@@ -164,9 +161,7 @@ If Mnemori grows into a real product, the path is: keep the desktop app for powe
 
 **`better-sqlite3` build errors during `npm install`** — install Visual Studio Build Tools (C++ workload), then run `npx electron-rebuild`.
 
-**Recording starts but file is empty** — antivirus is blocking ffmpeg or the mic name is wrong. Check Settings → re-scan devices.
-
-**"Python not found" when transcribing** — Python isn't on your PATH. Reinstall Python with the "Add to PATH" checkbox.
+**Recording starts but file is empty** — antivirus is blocking ffmpeg or the mic name is wrong. Check Settings > re-scan devices.
 
 **Whisper API errors on long recordings** — Whisper has a 25 MB upload limit. The 16kHz mono WAV the app produces holds about 90 minutes. For longer sessions, split with ffmpeg first.
 

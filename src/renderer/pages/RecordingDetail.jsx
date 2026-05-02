@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useToast } from '../lib/toast';
-import { formatDuration, formatRelativeTime, statusLabel } from '../lib/format';
+import { useConfirm } from '../lib/confirm';
+import { formatDuration, formatRelativeTime, statusLabel, stripMarkdown } from '../lib/format';
 import Markdown from '../components/Markdown';
 
 const MODES = [
@@ -11,16 +12,31 @@ const MODES = [
   { id: 'notes', label: 'Cleaned notes' },
 ];
 
+function formatTimestamp(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s < 10 ? '0' : ''}${s}`;
+}
+
 export default function RecordingDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const toast = useToast();
+  const confirm = useConfirm();
   const [recording, setRecording] = useState(null);
   const [transcript, setTranscript] = useState('');
+  const [segments, setSegments] = useState([]);
   const [busy, setBusy] = useState(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState({ title: '', project: '', tags: '' });
   const [projects, setProjects] = useState([]);
+  const [activeSegment, setActiveSegment] = useState(-1);
+  const [showGallery, setShowGallery] = useState(false);
+
+  const videoRef = useRef(null);
+  const transcriptRef = useRef(null);
+  const userScrolledRef = useRef(false);
+  const scrollTimeoutRef = useRef(null);
 
   useEffect(() => {
     load();
@@ -28,6 +44,13 @@ export default function RecordingDetail() {
     const unsub = window.api.recordings.onChanged(load);
     return unsub;
   }, [id]);
+
+  useEffect(() => {
+    if (!showGallery) return;
+    const handler = (e) => { if (e.key === 'Escape') setShowGallery(false); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [showGallery]);
 
   async function loadProjects() {
     const list = await window.api.projects.list();
@@ -47,7 +70,44 @@ export default function RecordingDetail() {
       try {
         const res = await fetch(`media://localhost/${data.transcript_path.replace(/\\/g, '/')}`);
         if (res.ok) setTranscript(await res.text());
-      } catch (_) { /* ignore */ }
+      } catch (_) {}
+
+      // Load segments JSON
+      const jsonPath = data.audio_path?.replace(/\.wav$/, '.json');
+      if (jsonPath) {
+        try {
+          const res = await fetch(`media://localhost/${jsonPath.replace(/\\/g, '/')}`);
+          if (res.ok) setSegments(await res.json());
+        } catch (_) {}
+      }
+    }
+  }
+
+  const handleTimeUpdate = useCallback(() => {
+    if (!videoRef.current || segments.length === 0) return;
+    const t = videoRef.current.currentTime;
+    const idx = segments.findIndex((s) => t >= s.start && t < s.end);
+    setActiveSegment(idx);
+
+    if (idx >= 0 && !userScrolledRef.current && transcriptRef.current) {
+      const el = transcriptRef.current.querySelector(`[data-seg="${idx}"]`);
+      if (el) el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [segments]);
+
+  const handleTranscriptScroll = useCallback(() => {
+    userScrolledRef.current = true;
+    clearTimeout(scrollTimeoutRef.current);
+    scrollTimeoutRef.current = setTimeout(() => {
+      userScrolledRef.current = false;
+    }, 4000);
+  }, []);
+
+  function seekTo(start) {
+    if (videoRef.current) {
+      videoRef.current.currentTime = start;
+      videoRef.current.play();
+      userScrolledRef.current = false;
     }
   }
 
@@ -74,14 +134,114 @@ export default function RecordingDetail() {
     load();
   }
 
+  async function copyText(text, label) {
+    await window.api.system.copyToClipboard(text);
+    toast(`${label} copied`);
+  }
+
+  async function copyArtifact(content, mode) {
+    if (screenshots.length === 0) {
+      await window.api.system.copyToClipboard(content);
+      toast(`${mode} copied`);
+      return;
+    }
+    const injected = injectScreenshotImages(content);
+    const ssFiles = screenshots.map(ss => ({
+      filePath: ss.file_path,
+      label: formatTimestamp(ss.timestamp_ms / 1000),
+    }));
+    const result = await window.api.system.copyArtifactRich(content, injected, ssFiles);
+    if (result.ok) toast(`${mode} copied with images`);
+  }
+
+  async function saveFile(defaultName, content) {
+    const result = await window.api.system.saveFile(defaultName, content);
+    if (result.ok) toast('File saved');
+  }
+
+  function safeName() {
+    return (recording?.title || 'recording').replace(/[^a-zA-Z0-9_\- ]/g, '').trim();
+  }
+
+  async function saveArtifact(mode, content) {
+    const name = `${safeName()} — ${mode}.md`;
+    if (screenshots.length === 0) {
+      const result = await window.api.system.saveFile(name, content);
+      if (result.ok) toast('File saved');
+      return;
+    }
+    const injected = injectScreenshotImages(content);
+    const ssFiles = screenshots.map(ss => ({
+      filePath: ss.file_path,
+      label: formatTimestamp(ss.timestamp_ms / 1000),
+    }));
+    const result = await window.api.system.saveArtifactBundle(name, injected, ssFiles);
+    if (result.ok) {
+      toast(result.imageCount > 0 ? `Saved with ${result.imageCount} image${result.imageCount === 1 ? '' : 's'}` : 'File saved');
+    }
+  }
+
+  async function copyScreenshot(filePath, e) {
+    e.stopPropagation();
+    const result = await window.api.system.copyScreenshot(filePath);
+    if (result.ok) toast('Screenshot copied');
+    else toast(result.error, 'error');
+  }
+
+  async function saveScreenshot(filePath, e) {
+    e.stopPropagation();
+    const result = await window.api.system.saveScreenshot(filePath);
+    if (result.ok) toast('Screenshot saved');
+  }
+
   async function deleteRecording() {
-    if (!confirm('Delete this recording and all its artifacts? This cannot be undone.')) return;
+    const ok = await confirm('Delete this recording and all its artifacts? This cannot be undone.');
+    if (!ok) return;
     await window.api.recordings.remove(id);
     toast('Deleted');
     navigate('/');
   }
 
-  if (!recording) return null;
+  const screenshots = recording?.screenshots || [];
+  const hasSegments = segments.length > 0;
+
+  const injectScreenshotImages = useCallback((content) => {
+    if (screenshots.length === 0) return content;
+    const used = new Set();
+    return content.replace(/(\*{0,2})Screenshot at (\d+:\d{2})(\*{0,2})/g, (match, pre, timestamp, post) => {
+      const [min, sec] = timestamp.split(':').map(Number);
+      const targetMs = (min * 60 + sec) * 1000;
+      const ss = screenshots.find(s => !used.has(s.id) && Math.abs(s.timestamp_ms - targetMs) < 3000);
+      if (ss && ss.file_path) {
+        used.add(ss.id);
+        const url = `media://localhost/${ss.file_path.replace(/\\/g, '/')}`;
+        return `${pre}Screenshot at ${timestamp}${post}\n\n![Screenshot at ${timestamp}](${url})\n`;
+      }
+      return match;
+    });
+  }, [screenshots]);
+
+  const getScreenshotContext = useCallback((ss) => {
+    const tSec = ss.timestamp_ms / 1000;
+    if (segments.length === 0) return null;
+    const nearby = segments.filter(s => Math.abs(s.start - tSec) < 15 || (s.start <= tSec && s.end >= tSec));
+    if (nearby.length > 0) return nearby.map(s => s.text.trim()).join(' ');
+    const closest = segments.reduce((best, s) => Math.abs(s.start - tSec) < Math.abs(best.start - tSec) ? s : best);
+    return closest.text.trim();
+  }, [segments]);
+
+  const timeline = useMemo(() => {
+    if (!hasSegments || !recording) return null;
+    const items = [];
+    segments.forEach((seg, i) => items.push({ type: 'segment', ...seg, index: i }));
+    screenshots.forEach((ss) => items.push({ type: 'screenshot', ...ss, start: ss.timestamp_ms / 1000 }));
+    items.sort((a, b) => a.start - b.start);
+    return items;
+  }, [segments, screenshots, hasSegments, recording]);
+
+  if (!recording) return (
+    <div style={{ textAlign: 'center', padding: '48px 0', color: 'var(--ink-4)' }}>Loading...</div>
+  );
 
   const canTranscribe = recording.status === 'recorded' || recording.status === 'error';
   const canGenerate = recording.status === 'transcribed' || recording.transcript_path;
@@ -119,18 +279,102 @@ export default function RecordingDetail() {
           <div className="detail-main">
             <div className="video-container">
               {recording.video_path ? (
-                <video controls src={`media://localhost/${recording.video_path.replace(/\\/g, '/')}`} />
+                <video
+                  ref={videoRef}
+                  controls
+                  src={`media://localhost/${recording.video_path.replace(/\\/g, '/')}`}
+                  onTimeUpdate={handleTimeUpdate}
+                />
               ) : (
                 <div className="video-placeholder">No video</div>
               )}
             </div>
 
+            {busy && (
+              <div className="pipeline-progress">
+                <div className="pipeline-progress-bar" />
+                <span className="pipeline-progress-label">
+                  {busy === 'transcribe'
+                    ? 'Transcribing audio — this may take a moment for longer recordings…'
+                    : `Generating ${busy}…`}
+                </span>
+              </div>
+            )}
+
             {transcript && (
               <>
                 <div className="section-heading">
                   <span>Transcript</span>
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn btn-ghost btn-sm" onClick={() => copyText(transcript, 'Transcript')}>
+                      Copy
+                    </button>
+                    <button className="btn btn-ghost btn-sm" onClick={() => saveFile(`${safeName()} — transcript.txt`, transcript)}>
+                      Save .txt
+                    </button>
+                  </div>
                 </div>
-                <div className="transcript-box">{transcript}</div>
+                {hasSegments && timeline ? (
+                  <div
+                    className="transcript-box transcript-segments"
+                    ref={transcriptRef}
+                    onScroll={handleTranscriptScroll}
+                  >
+                    {timeline.map((item, i) =>
+                      item.type === 'segment' ? (
+                        <span
+                          key={`seg-${item.index}`}
+                          data-seg={item.index}
+                          className={`transcript-seg${activeSegment === item.index ? ' transcript-seg-active' : ''}`}
+                          onClick={() => seekTo(item.start)}
+                          title={`${formatTimestamp(item.start)} – ${formatTimestamp(item.end)}`}
+                        >
+                          <span className="transcript-seg-time">{formatTimestamp(item.start)}</span>
+                          {item.text}
+                        </span>
+                      ) : (
+                        <div
+                          key={`ss-${item.id}`}
+                          className="transcript-screenshot"
+                          onClick={() => seekTo(item.start)}
+                        >
+                          <img
+                            src={`media://localhost/${item.file_path.replace(/\\/g, '/')}`}
+                            alt={`Screenshot at ${formatTimestamp(item.start)}`}
+                            className="transcript-screenshot-img"
+                          />
+                          <span className="transcript-screenshot-time">{formatTimestamp(item.start)}</span>
+                          <div className="screenshot-actions">
+                            <button className="btn btn-ghost btn-sm" onClick={(e) => copyScreenshot(item.file_path, e)}>Copy</button>
+                            <button className="btn btn-ghost btn-sm" onClick={(e) => saveScreenshot(item.file_path, e)}>Save</button>
+                          </div>
+                        </div>
+                      )
+                    )}
+                  </div>
+                ) : (
+                  <div className="transcript-box">
+                    {transcript}
+                    {screenshots.length > 0 && (
+                      <div style={{ marginTop: 16 }}>
+                        {screenshots.map((ss) => (
+                          <div key={ss.id} className="transcript-screenshot" onClick={() => seekTo(ss.timestamp_ms / 1000)}>
+                            <img
+                              src={`media://localhost/${ss.file_path.replace(/\\/g, '/')}`}
+                              alt={`Screenshot at ${formatTimestamp(ss.timestamp_ms / 1000)}`}
+                              className="transcript-screenshot-img"
+                            />
+                            <span className="transcript-screenshot-time">{formatTimestamp(ss.timestamp_ms / 1000)}</span>
+                            <div className="screenshot-actions">
+                              <button className="btn btn-ghost btn-sm" onClick={(e) => copyScreenshot(ss.file_path, e)}>Copy</button>
+                              <button className="btn btn-ghost btn-sm" onClick={(e) => saveScreenshot(ss.file_path, e)}>Save</button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </>
             )}
 
@@ -143,11 +387,22 @@ export default function RecordingDetail() {
                   <div key={a.id} className="artifact">
                     <div className="artifact-head">
                       <div className="artifact-mode">{a.mode}</div>
-                      <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
-                        {formatRelativeTime(a.created_at)}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <button className="btn btn-ghost btn-sm" onClick={() => copyArtifact(a.content, a.mode)}>
+                          Copy
+                        </button>
+                        <button className="btn btn-ghost btn-sm" onClick={() => copyText(stripMarkdown(a.content), a.mode)}>
+                          Copy plain
+                        </button>
+                        <button className="btn btn-ghost btn-sm" onClick={() => saveArtifact(a.mode, a.content)}>
+                          Save .md
+                        </button>
+                        <div style={{ fontSize: 11, color: 'var(--ink-3)' }}>
+                          {formatRelativeTime(a.created_at)}
+                        </div>
                       </div>
                     </div>
-                    <div className="artifact-content"><Markdown>{a.content}</Markdown></div>
+                    <div className="artifact-content"><Markdown screenshots={screenshots}>{injectScreenshotImages(a.content)}</Markdown></div>
                   </div>
                 ))}
               </>
@@ -240,6 +495,18 @@ export default function RecordingDetail() {
               </div>
             </div>
 
+            {screenshots.length > 0 && (
+              <div className="panel-section">
+                <div className="panel-label">Screenshots</div>
+                <button
+                  className="btn btn-ghost btn-sm btn-block"
+                  onClick={() => setShowGallery(true)}
+                >
+                  {screenshots.length} capture{screenshots.length === 1 ? '' : 's'}
+                </button>
+              </div>
+            )}
+
             <div className="panel-section">
               <div className="panel-label">File</div>
               <button
@@ -259,6 +526,43 @@ export default function RecordingDetail() {
           </aside>
         </div>
       </div>
+
+      {showGallery && (
+        <div className="gallery-overlay" onClick={() => setShowGallery(false)} role="dialog" aria-modal="true" aria-label="Screenshot gallery">
+          <div className="gallery-container" onClick={e => e.stopPropagation()}>
+            <div className="gallery-header">
+              <h3>Captures</h3>
+              <button className="btn btn-ghost btn-sm" onClick={() => setShowGallery(false)} aria-label="Close gallery">Close</button>
+            </div>
+            <div className="gallery-grid">
+              {screenshots.map(ss => {
+                const context = getScreenshotContext(ss);
+                return (
+                  <div key={ss.id} className="gallery-item">
+                    <div className="gallery-img-wrap" onClick={() => { seekTo(ss.timestamp_ms / 1000); setShowGallery(false); }}>
+                      <img
+                        src={`media://localhost/${ss.file_path.replace(/\\/g, '/')}`}
+                        alt={`Screenshot at ${formatTimestamp(ss.timestamp_ms / 1000)}`}
+                        className="gallery-img"
+                      />
+                    </div>
+                    <div className="gallery-meta">
+                      <div className="gallery-meta-top">
+                        <span className="gallery-time">{formatTimestamp(ss.timestamp_ms / 1000)}</span>
+                        <div className="gallery-actions">
+                          <button className="btn btn-ghost btn-sm" onClick={(e) => copyScreenshot(ss.file_path, e)}>Copy</button>
+                          <button className="btn btn-ghost btn-sm" onClick={(e) => saveScreenshot(ss.file_path, e)}>Save</button>
+                        </div>
+                      </div>
+                      {context && <p className="gallery-context">{context}</p>}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

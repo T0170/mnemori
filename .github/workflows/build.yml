@@ -57,3 +57,33 @@ jobs:
           name: Mnemori-macOS
           path: dist/*.dmg
           if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: echo "version=$(node -p 'require(\"./package.json\").version')" >> $GITHUB_OUTPUT
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Mnemori v${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: true
+          generate_release_notes: true
+          files: |
+            artifacts/Mnemori-Windows-Installer/*
+            artifacts/Mnemori-Windows-Portable/*
+            artifacts/Mnemori-macOS/*

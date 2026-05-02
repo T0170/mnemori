@@ -1,13 +1,22 @@
 {
   "name": "mnemori",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "description": "Spoken memory — narrate your screen, capture your reasoning, refine it into documentation and coaching",
+  "author": "Third Feather Capital Inc",
+  "license": "UNLICENSED",
+  "homepage": "https://mnemori.app",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mnemori/mnemori-app"
+  },
+  "private": true,
   "main": "src/main/index.js",
   "scripts": {
     "dev": "concurrently \"npm:dev:vite\" \"npm:dev:electron\"",
     "dev:vite": "vite",
     "dev:electron": "wait-on http://localhost:5173 && electron .",
     "build": "vite build && electron-builder",
+    "rebuild": "electron-rebuild",
     "postinstall": "node scripts/patch-builder.js",
     "preview": "vite preview"
   },
@@ -23,7 +32,19 @@
       "node_modules/better-sqlite3/**"
     ],
     "win": {
-      "target": ["portable", "nsis"]
+      "target": [
+        "portable",
+        "nsis"
+      ],
+      "icon": "build/icon.ico",
+      "publisherName": "Third Feather Capital Inc"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico"
     },
     "mac": {
       "target": "dmg",

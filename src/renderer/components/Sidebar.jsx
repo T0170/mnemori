@@ -1,8 +1,21 @@
-import React from 'react';
-import { NavLink } from 'react-router-dom';
+import React, { useState } from 'react';
+import { NavLink, useNavigate } from 'react-router-dom';
+import { useAuth } from '../lib/auth';
 import RecordingControl from './RecordingControl';
 
 export default function Sidebar({ onRecordingChanged }) {
+  const { isSignedIn, user, roleName, can, signIn, signOut } = useAuth();
+  const [quickSearch, setQuickSearch] = useState('');
+  const navigate = useNavigate();
+
+  function handleSearchSubmit(e) {
+    e.preventDefault();
+    if (quickSearch.trim()) {
+      navigate('/?q=' + encodeURIComponent(quickSearch.trim()));
+      setQuickSearch('');
+    }
+  }
+
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -10,16 +23,26 @@ export default function Sidebar({ onRecordingChanged }) {
         <div className="brand-tagline">Spoken memory.</div>
       </div>
 
+      <form className="sidebar-search" onSubmit={handleSearchSubmit}>
+        <input
+          className="input sidebar-search-input"
+          type="text"
+          placeholder="Search…"
+          value={quickSearch}
+          onChange={(e) => setQuickSearch(e.target.value)}
+        />
+      </form>
+
       <div className="nav-label">Workspace</div>
       <nav className="nav">
         <NavLink to="/" end className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
           Library
         </NavLink>
-        <NavLink to="/concepts" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
-          Concepts
-        </NavLink>
         <NavLink to="/projects" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
           Projects
+        </NavLink>
+        <NavLink to="/concepts" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+          Concepts
         </NavLink>
       </nav>
 
@@ -30,7 +53,35 @@ export default function Sidebar({ onRecordingChanged }) {
         <NavLink to="/settings" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
           Settings
         </NavLink>
+        {can('admin:access') && (
+          <NavLink to="/admin" className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}>
+            Admin
+          </NavLink>
+        )}
       </nav>
+
+      <div className="sidebar-account">
+        {isSignedIn && user ? (
+          <div className="account-info">
+            {user.imageUrl && (
+              <img src={user.imageUrl} alt="" className="account-avatar" />
+            )}
+            <div className="account-details">
+              <div className="account-name">{user.name || user.email}</div>
+              <div className="account-role">
+                {user.orgName || 'Personal'} · {roleName}
+              </div>
+            </div>
+            <button className="account-signout" onClick={signOut} title="Sign out">
+              &times;
+            </button>
+          </div>
+        ) : (
+          <button className="btn btn-ghost btn-sm account-signin" onClick={signIn}>
+            Sign in
+          </button>
+        )}
+      </div>
 
       <div className="sidebar-footer">
         <RecordingControl onChanged={onRecordingChanged} />

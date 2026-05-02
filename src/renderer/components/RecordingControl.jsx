@@ -1,17 +1,37 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useToast } from '../lib/toast';
 import { formatDuration } from '../lib/format';
 
 export default function RecordingControl({ onChanged }) {
   const [isRecording, setIsRecording] = useState(false);
   const [elapsed, setElapsed] = useState(0);
+  const [hasDevice, setHasDevice] = useState(true);
+  const [snapFlash, setSnapFlash] = useState(false);
   const startedAtRef = useRef(null);
   const tickRef = useRef(null);
   const toast = useToast();
 
+  const handleSnap = useCallback(async () => {
+    const result = await window.api.recording.screenshot();
+    if (result.ok) {
+      setSnapFlash(true);
+      setTimeout(() => setSnapFlash(false), 300);
+    } else {
+      toast(result.error, 'error');
+    }
+  }, [toast]);
+
   useEffect(() => {
     refresh();
+    checkDevice();
+    const unsub = window.api.recordings.onChanged(() => { refresh(); checkDevice(); });
+    return unsub;
   }, []);
+
+  async function checkDevice() {
+    const device = await window.api.settings.get('audioDevice');
+    setHasDevice(!!device);
+  }
 
   async function refresh() {
     const status = await window.api.recording.status();
@@ -19,6 +39,10 @@ export default function RecordingControl({ onChanged }) {
     if (status.isRecording && status.startedAt) {
       startedAtRef.current = status.startedAt;
       startTick();
+    } else {
+      stopTick();
+      setElapsed(0);
+      startedAtRef.current = null;
     }
   }
 
@@ -70,9 +94,25 @@ export default function RecordingControl({ onChanged }) {
         {isRecording ? 'Recording' : 'Idle'}
       </div>
       <div className="record-time">{formatDuration(elapsed)}</div>
-      <button className="record-button" onClick={handleClick}>
-        {isRecording ? 'Stop' : 'Start Recording'}
-      </button>
+      <div className="record-actions">
+        <button className="record-button" onClick={handleClick} disabled={!isRecording && !hasDevice}>
+          {isRecording ? 'Stop' : 'Start Recording'}
+        </button>
+        {isRecording && (
+          <button
+            className={`record-snap${snapFlash ? ' snap-flash' : ''}`}
+            onClick={handleSnap}
+            title="Capture screenshot (Ctrl+Shift+S)"
+          >
+            Snap
+          </button>
+        )}
+      </div>
+      {!hasDevice && !isRecording && (
+        <div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 6, textAlign: 'center' }}>
+          Select a microphone in Settings
+        </div>
+      )}
     </div>
   );
 }

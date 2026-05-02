@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline';" />
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    html, body { background: transparent; overflow: hidden; height: 100%; }
+
+    .overlay {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 10px 16px;
+      background: rgba(26, 23, 20, 0.92);
+      border-radius: 10px;
+      border: 1px solid rgba(201, 191, 169, 0.2);
+      -webkit-app-region: drag;
+      user-select: none;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #c4441a;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+
+    .timer {
+      font-family: 'JetBrains Mono', 'Consolas', monospace;
+      font-size: 18px;
+      font-weight: 500;
+      color: #f3ede1;
+      letter-spacing: 0.03em;
+      min-width: 60px;
+    }
+
+    .capture-btn {
+      -webkit-app-region: no-drag;
+      background: transparent;
+      border: 1px solid rgba(201, 191, 169, 0.35);
+      color: #f3ede1;
+      width: 28px;
+      height: 28px;
+      border-radius: 4px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: border-color 0.12s, background 0.12s;
+      padding: 0;
+    }
+
+    .capture-btn:hover {
+      border-color: rgba(201, 191, 169, 0.6);
+      background: rgba(243, 237, 225, 0.08);
+    }
+
+    .capture-icon {
+      width: 14px;
+      height: 14px;
+      border: 1.5px solid #f3ede1;
+      border-radius: 2px;
+    }
+
+    .capture-flash {
+      background: rgba(243, 237, 225, 0.25) !important;
+    }
+
+    .stop-btn {
+      -webkit-app-region: no-drag;
+      background: #c4441a;
+      border: none;
+      color: #f3ede1;
+      font-family: 'DM Sans', system-ui, sans-serif;
+      font-size: 12px;
+      font-weight: 500;
+      padding: 5px 14px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: background 0.12s;
+    }
+
+    .stop-btn:hover { background: #a83815; }
+  </style>
+</head>
+<body>
+  <div class="overlay">
+    <div class="dot"></div>
+    <div class="timer" id="timer">0:00</div>
+    <button class="capture-btn" id="capture" title="Capture screenshot (Ctrl+Shift+S)">
+      <span class="capture-icon"></span>
+    </button>
+    <button class="stop-btn" id="stop">Stop</button>
+  </div>
+
+  <script>
+    const timerEl = document.getElementById('timer');
+    const stopBtn = document.getElementById('stop');
+    const captureBtn = document.getElementById('capture');
+
+    function pad(n) { return n < 10 ? '0' + n : '' + n; }
+
+    function formatTime(seconds) {
+      const m = Math.floor(seconds / 60);
+      const s = seconds % 60;
+      return m + ':' + pad(s);
+    }
+
+    let startedAt = null;
+    let tickInterval = null;
+
+    function startTick(ts) {
+      startedAt = ts;
+      tickInterval = setInterval(() => {
+        const elapsed = Math.floor((Date.now() - startedAt) / 1000);
+        timerEl.textContent = formatTime(elapsed);
+      }, 250);
+    }
+
+    window.overlayAPI.getStatus().then((status) => {
+      if (status.isRecording && status.startedAt) {
+        startTick(status.startedAt);
+      }
+    });
+
+    window.overlayAPI.onStarted((startedAtTs) => {
+      startTick(startedAtTs);
+    });
+
+    window.overlayAPI.onStopped(() => {
+      clearInterval(tickInterval);
+      timerEl.textContent = '0:00';
+    });
+
+    stopBtn.addEventListener('click', () => {
+      window.overlayAPI.stop();
+    });
+
+    captureBtn.addEventListener('click', () => {
+      window.overlayAPI.screenshot();
+    });
+
+    window.overlayAPI.onScreenshotCaptured(() => {
+      captureBtn.classList.add('capture-flash');
+      setTimeout(() => captureBtn.classList.remove('capture-flash'), 300);
+    });
+  </script>
+</body>
+</html>

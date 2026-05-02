@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useToast } from '../lib/toast';
+import { useAuth } from '../lib/auth';
 
 function AudioMeter() {
   const [level, setLevel] = useState(0);
@@ -87,35 +88,57 @@ function AudioMeter() {
 
 export default function Settings() {
   const toast = useToast();
+  const { isSignedIn, user, roleName, signIn, signOut } = useAuth();
   const [audioDevices, setAudioDevices] = useState([]);
   const [selectedDevice, setSelectedDevice] = useState('');
-  const [openaiKey, setOpenaiKey] = useState('');
-  const [anthropicKey, setAnthropicKey] = useState('');
   const [loading, setLoading] = useState(true);
+  const [hotkey, setHotkey] = useState('');
+  const [hotkeyStatus, setHotkeyStatus] = useState(null);
+  const [autoTranscribe, setAutoTranscribe] = useState(false);
+  const [autoGenerateMode, setAutoGenerateMode] = useState('');
+  const [conceptsAutoExtract, setConceptsAutoExtract] = useState(false);
+  const [pipelineDisabled, setPipelineDisabled] = useState(false);
 
   useEffect(() => { load(); }, []);
 
   async function load() {
-    const [devices, dev, ok, ak] = await Promise.all([
-      window.api.settings.listAudioDevices(),
-      window.api.settings.get('audioDevice'),
-      window.api.settings.get('openaiApiKey'),
-      window.api.settings.get('anthropicApiKey'),
-    ]);
-    setAudioDevices(devices);
-    setSelectedDevice(dev || '');
-    setOpenaiKey(ok || '');
-    setAnthropicKey(ak || '');
-    setLoading(false);
+    try {
+      const [devices, dev, hk, at, agm, cae, ppd] = await Promise.all([
+        window.api.settings.listAudioDevices(),
+        window.api.settings.get('audioDevice'),
+        window.api.hotkey.get(),
+        window.api.settings.get('autoTranscribe'),
+        window.api.settings.get('autoGenerateMode'),
+        window.api.settings.get('conceptsAutoExtract'),
+        window.api.settings.get('policyAutoPipelineDisabled'),
+      ]);
+      setAudioDevices(devices);
+      setSelectedDevice(dev || '');
+      setHotkey(hk || '');
+      setAutoTranscribe(at === 'true');
+      setAutoGenerateMode(agm || '');
+      setConceptsAutoExtract(cae === 'true');
+      setPipelineDisabled(ppd === 'true');
+    } catch (err) {
+      toast('Failed to load settings', 'error');
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function save() {
-    await Promise.all([
-      window.api.settings.set('audioDevice', selectedDevice),
-      window.api.settings.set('openaiApiKey', openaiKey),
-      window.api.settings.set('anthropicApiKey', anthropicKey),
-    ]);
-    toast('Settings saved');
+    try {
+      await Promise.all([
+        window.api.settings.set('audioDevice', selectedDevice),
+        window.api.settings.set('autoTranscribe', autoTranscribe ? 'true' : ''),
+        window.api.settings.set('autoGenerateMode', autoTranscribe ? autoGenerateMode : ''),
+        window.api.settings.set('conceptsAutoExtract', conceptsAutoExtract ? 'true' : ''),
+      ]);
+      toast('Settings saved');
+      load();
+    } catch (err) {
+      toast('Failed to save settings', 'error');
+    }
   }
 
   async function rescanDevices() {
@@ -134,6 +157,38 @@ export default function Settings() {
       <div className="content">
         <div className="settings-grid">
 
+          {/* ---- Account ---- */}
+          <div className="field-group">
+            <h3>Account</h3>
+            {isSignedIn && user ? (
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 12 }}>
+                  {user.imageUrl && (
+                    <img src={user.imageUrl} alt="" style={{ width: 36, height: 36, borderRadius: '50%' }} />
+                  )}
+                  <div>
+                    <div style={{ fontWeight: 500 }}>{user.name || user.email}</div>
+                    <div style={{ fontSize: 12, color: 'var(--ink-3)' }}>{user.email}</div>
+                  </div>
+                </div>
+                <div style={{ fontSize: 13, color: 'var(--ink-2)', marginBottom: 12 }}>
+                  <strong>Role:</strong> {roleName}
+                  {user.orgName && <> &middot; <strong>Organization:</strong> {user.orgName}</>}
+                </div>
+                <button className="btn btn-ghost btn-sm" onClick={signOut}>Sign out</button>
+              </div>
+            ) : (
+              <div>
+                <p className="help" style={{ marginBottom: 12 }}>
+                  Sign in to join an organization, or continue without an account.
+                  Without an account you have full control — you manage your own API keys, retention, and data.
+                </p>
+                <button className="btn btn-ghost btn-sm" onClick={signIn}>Sign in</button>
+              </div>
+            )}
+          </div>
+
+          {/* ---- Audio ---- */}
           <div className="field-group">
             <h3>Audio capture</h3>
             <p className="help">
@@ -158,36 +213,130 @@ export default function Settings() {
               onClick={rescanDevices}
               disabled={loading}
             >
-              {loading ? 'Scanning…' : 'Re-scan devices'}
+              {loading ? 'Scanning...' : 'Re-scan devices'}
             </button>
             <AudioMeter />
           </div>
 
+          {/* ---- Global hotkey ---- */}
           <div className="field-group">
-            <h3>API keys</h3>
+            <h3>Global hotkey</h3>
             <p className="help">
-              Stored locally on your machine. Used only when you transcribe or generate.
+              Press this shortcut from any application to start or stop recording.
+              Uses Electron accelerator format (e.g. CommandOrControl+Shift+M).
             </p>
             <div className="field">
-              <label>OpenAI (Whisper transcription)</label>
-              <input
-                className="input"
-                type="password"
-                value={openaiKey}
-                onChange={(e) => setOpenaiKey(e.target.value)}
-                placeholder="sk-..."
-              />
+              <label>Shortcut</label>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  className="input"
+                  value={hotkey}
+                  onChange={(e) => { setHotkey(e.target.value); setHotkeyStatus(null); }}
+                  placeholder="CommandOrControl+Shift+M"
+                  style={{ width: 280 }}
+                />
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={async () => {
+                    const result = await window.api.hotkey.set(hotkey);
+                    setHotkeyStatus(result.ok ? 'Registered' : result.error);
+                    if (result.ok) toast('Hotkey updated');
+                    else toast(result.error, 'error');
+                  }}
+                >
+                  Apply
+                </button>
+                {hotkey && (
+                  <button
+                    className="btn btn-ghost btn-sm"
+                    onClick={async () => {
+                      await window.api.hotkey.clear();
+                      setHotkey('');
+                      setHotkeyStatus(null);
+                      toast('Hotkey disabled');
+                    }}
+                  >
+                    Disable
+                  </button>
+                )}
+              </div>
             </div>
-            <div className="field">
-              <label>Anthropic (Claude documentation)</label>
-              <input
-                className="input"
-                type="password"
-                value={anthropicKey}
-                onChange={(e) => setAnthropicKey(e.target.value)}
-                placeholder="sk-ant-..."
-              />
-            </div>
+            {hotkeyStatus && (
+              <div style={{ fontSize: 12, marginTop: 4, color: hotkeyStatus === 'Registered' ? 'var(--moss)' : 'var(--ember)' }}>
+                {hotkeyStatus}
+              </div>
+            )}
+          </div>
+
+          {/* ---- Auto-pipeline ---- */}
+          <div className="field-group">
+            <h3>Auto-pipeline</h3>
+            {pipelineDisabled ? (
+              <div className="policy-notice">
+                Your organization has disabled automatic pipeline processing. Contact your admin to change this.
+              </div>
+            ) : (
+              <>
+                <p className="help">
+                  By default, transcription and artifact generation are manual.
+                  Enable these options to run them automatically after each recording.
+                  Each run consumes API tokens.
+                </p>
+                <div className="field">
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={autoTranscribe}
+                      onChange={(e) => {
+                        setAutoTranscribe(e.target.checked);
+                        if (!e.target.checked) setAutoGenerateMode('');
+                      }}
+                    />
+                    Auto-transcribe after recording
+                  </label>
+                </div>
+                {autoTranscribe && (
+                  <>
+                    <div className="field" style={{ marginTop: 8 }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={!!autoGenerateMode}
+                          onChange={(e) => setAutoGenerateMode(e.target.checked ? 'sop' : '')}
+                        />
+                        Auto-generate artifact after transcription
+                      </label>
+                      {autoGenerateMode && (
+                        <select
+                          className="select"
+                          value={autoGenerateMode}
+                          onChange={(e) => setAutoGenerateMode(e.target.value)}
+                          style={{ marginTop: 8, width: 220 }}
+                        >
+                          <option value="sop">SOP</option>
+                          <option value="methodology">Methodology</option>
+                          <option value="coaching">Coaching review</option>
+                          <option value="notes">Cleaned notes</option>
+                        </select>
+                      )}
+                    </div>
+                    <div className="field" style={{ marginTop: 8 }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={conceptsAutoExtract}
+                          onChange={(e) => setConceptsAutoExtract(e.target.checked)}
+                        />
+                        Auto-extract concepts for coaching
+                      </label>
+                      <p className="help" style={{ marginTop: 4, marginLeft: 26 }}>
+                        Runs pattern analysis on each transcription for the Concepts dashboard.
+                      </p>
+                    </div>
+                  </>
+                )}
+              </>
+            )}
           </div>
 
           <div>

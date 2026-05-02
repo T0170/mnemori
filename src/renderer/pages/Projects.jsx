@@ -1,13 +1,15 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useToast } from '../lib/toast';
-import { formatDuration, formatRelativeTime, statusLabel } from '../lib/format';
+import { useConfirm } from '../lib/confirm';
+import { formatDuration, formatRelativeTime, statusLabel, stripMarkdown } from '../lib/format';
 import Markdown from '../components/Markdown';
 
 export default function Projects() {
   const { id } = useParams();
   const navigate = useNavigate();
   const toast = useToast();
+  const confirm = useConfirm();
   const [projects, setProjects] = useState([]);
   const [detail, setDetail] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -20,33 +22,69 @@ export default function Projects() {
   useEffect(() => { if (id) loadDetail(id); else setDetail(null); }, [id]);
 
   async function loadProjects() {
-    const list = await window.api.projects.list();
-    setProjects(list);
+    try {
+      const list = await window.api.projects.list();
+      setProjects(list);
+    } catch (err) {
+      toast('Failed to load projects', 'error');
+    }
     setLoading(false);
   }
 
   async function loadDetail(projId) {
-    const data = await window.api.projects.get(projId);
-    setDetail(data);
+    try {
+      const data = await window.api.projects.get(projId);
+      setDetail(data);
+    } catch (err) {
+      toast('Failed to load project', 'error');
+    }
   }
 
   async function createProject() {
     const name = newName.trim();
     if (!name) return;
-    await window.api.projects.create(name, newDesc.trim());
-    setNewName('');
-    setNewDesc('');
-    setShowCreate(false);
-    toast('Project created');
-    loadProjects();
+    try {
+      await window.api.projects.create(name, newDesc.trim());
+      setNewName('');
+      setNewDesc('');
+      setShowCreate(false);
+      toast('Project created');
+      loadProjects();
+    } catch (err) {
+      toast('Failed to create project', 'error');
+    }
   }
 
   async function deleteProject(projId) {
-    if (!confirm('Delete this project? Recordings will be unlinked but not deleted.')) return;
-    await window.api.projects.remove(projId);
-    toast('Project deleted');
-    if (id === projId) navigate('/projects');
-    loadProjects();
+    const ok = await confirm('Delete this project? Recordings will be unlinked but not deleted.');
+    if (!ok) return;
+    try {
+      await window.api.projects.remove(projId);
+      toast('Project deleted');
+      if (id === projId) navigate('/projects');
+      loadProjects();
+    } catch (err) {
+      toast('Failed to delete project', 'error');
+    }
+  }
+
+  async function copySummary() {
+    if (!detail?.summary) return;
+    await window.api.system.copyToClipboard(detail.summary);
+    toast('Summary copied');
+  }
+
+  async function copySummaryPlain() {
+    if (!detail?.summary) return;
+    await window.api.system.copyToClipboard(stripMarkdown(detail.summary));
+    toast('Summary copied');
+  }
+
+  async function saveSummary() {
+    if (!detail?.summary) return;
+    const safeName = detail.name.replace(/[^a-zA-Z0-9_\- ]/g, '').trim();
+    const result = await window.api.system.saveFile(`${safeName} — summary.md`, detail.summary);
+    if (result.ok) toast('File saved');
   }
 
   async function generateSummary() {
@@ -119,6 +157,19 @@ export default function Projects() {
                     ? 'Regenerate summary'
                     : 'Generate summary'}
               </button>
+              {detail.summary && (
+                <>
+                  <button className="btn btn-ghost btn-sm" onClick={copySummary}>
+                    Copy
+                  </button>
+                  <button className="btn btn-ghost btn-sm" onClick={copySummaryPlain}>
+                    Copy plain
+                  </button>
+                  <button className="btn btn-ghost btn-sm" onClick={saveSummary}>
+                    Save .md
+                  </button>
+                </>
+              )}
               {transcribedCount > 0 && (
                 <span style={{ fontSize: 11, color: 'var(--ink-3)', alignSelf: 'center' }}>
                   from {transcribedCount} transcribed recording{transcribedCount === 1 ? '' : 's'}
@@ -231,9 +282,14 @@ export default function Projects() {
             >
               <div>
                 <div className="recording-title">{p.name}</div>
-                {p.description && (
-                  <div className="recording-meta">
+                <div className="recording-meta">
+                  {p.description && (
                     <span className="recording-meta-item">{p.description}</span>
+                  )}
+                </div>
+                {p.summary && (
+                  <div className="project-snippet">
+                    {p.summary.replace(/[#*_>\-\[\]()]/g, '').slice(0, 160).trim()}…
                   </div>
                 )}
               </div>
