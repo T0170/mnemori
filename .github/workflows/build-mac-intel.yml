@@ -1,6 +1,8 @@
 name: Build macOS Intel
 
 on:
+  push:
+    branches: [master]
   workflow_dispatch:
 
 permissions:
