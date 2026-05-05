@@ -1119,6 +1119,76 @@ a { color: inherit; text-decoration: none; }
 .gen-chip:hover { border-color: var(--ember); color: var(--ember); }
 .gen-chip:disabled { opacity: 0.5; cursor: wait; }
 
+.gen-chip-custom {
+  border-style: dashed;
+}
+
+/* ---- Custom Prompt Manager ---- */
+.prompt-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.prompt-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.prompt-item-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.prompt-item-name {
+  font-weight: 500;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.prompt-item-default {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--moss);
+  background: rgba(74, 93, 60, 0.1);
+  padding: 2px 8px;
+  border-radius: 100px;
+}
+
+.prompt-item-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.prompt-editor {
+  margin-top: 12px;
+  padding: 16px;
+  background: var(--paper-2);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius);
+}
+
+.prompt-textarea {
+  width: 100%;
+  min-height: 180px;
+  resize: vertical;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 /* ---- Toast ---- */
 .toast-stack {
   position: fixed;

@@ -206,6 +206,15 @@ db.exec(`
     created_at INTEGER NOT NULL,
     FOREIGN KEY (recording_id) REFERENCES recordings(id)
   );
+
+  CREATE TABLE IF NOT EXISTS custom_prompts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    prompt_text TEXT NOT NULL,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
 `);
 
 // FTS5 full-text search index
@@ -1133,20 +1142,37 @@ async function runAutoPipeline(recordingId) {
     } catch (_) {}
 
     const autoMode = getSetting('autoGenerateMode');
-    if (autoMode && ['sop', 'methodology', 'coaching', 'notes'].includes(autoMode)) {
+    if (autoMode) {
       let autoSegments = [];
       const autoJsonPath = rec.audio_path?.replace(/\.wav$/, '.json');
       if (autoJsonPath && fs.existsSync(autoJsonPath)) {
         try { autoSegments = JSON.parse(fs.readFileSync(autoJsonPath, 'utf-8')); } catch (_) {}
       }
       const autoSsContext = buildScreenshotContext(recordingId, autoSegments);
-      const output = await generateWithClaude(transcriptText, autoMode, null, autoSsContext);
-      db.prepare(
-        'INSERT INTO artifacts (recording_id, mode, content, created_at) VALUES (?, ?, ?, ?)'
-      ).run(recordingId, autoMode, output, Date.now());
-      indexArtifact(recordingId, autoMode, output);
-      mainWindow?.webContents.send('recordings:changed');
-      auditLog('pipeline:auto-generate', recordingId, `mode=${autoMode}`);
+
+      let genMode = autoMode;
+      let genCustomPrompt = null;
+      let displayMode = autoMode;
+
+      const customMatch = autoMode.match(/^custom:(\d+)$/);
+      if (customMatch) {
+        const cp = db.prepare('SELECT * FROM custom_prompts WHERE id = ?').get(Number(customMatch[1]));
+        if (cp) {
+          genMode = null;
+          genCustomPrompt = cp.prompt_text + '\n\nTRANSCRIPT:\n{transcript}';
+          displayMode = `custom:${cp.name}`;
+        }
+      }
+
+      if (genMode || genCustomPrompt) {
+        const output = await generateWithClaude(transcriptText, genMode, genCustomPrompt, autoSsContext);
+        db.prepare(
+          'INSERT INTO artifacts (recording_id, mode, content, created_at) VALUES (?, ?, ?, ?)'
+        ).run(recordingId, displayMode, output, Date.now());
+        indexArtifact(recordingId, displayMode, output);
+        mainWindow?.webContents.send('recordings:changed');
+        auditLog('pipeline:auto-generate', recordingId, `mode=${displayMode}`);
+      }
     }
   } catch (err) {
     db.prepare('UPDATE recordings SET status = ? WHERE id = ?').run('error', recordingId);
@@ -1478,10 +1504,19 @@ ipcMain.handle('pipeline:transcribe', async (_evt, id) => {
   }
 });
 
-ipcMain.handle('pipeline:generate', async (_evt, id, mode) => {
+ipcMain.handle('pipeline:generate', async (_evt, id, mode, customPromptId) => {
   if (isAuthGated()) return { ok: false, error: 'Sign in required' };
   const rec = db.prepare('SELECT * FROM recordings WHERE id = ?').get(id);
   if (!rec || !rec.transcript_path) return { ok: false, error: 'No transcript available' };
+
+  let customPromptText = null;
+  let displayMode = mode;
+  if (customPromptId) {
+    const cp = db.prepare('SELECT * FROM custom_prompts WHERE id = ?').get(customPromptId);
+    if (!cp) return { ok: false, error: 'Custom prompt not found' };
+    customPromptText = cp.prompt_text + '\n\nTRANSCRIPT:\n{transcript}';
+    displayMode = `custom:${cp.name}`;
+  }
 
   try {
     const transcript = fs.readFileSync(rec.transcript_path, 'utf-8');
@@ -1493,16 +1528,16 @@ ipcMain.handle('pipeline:generate', async (_evt, id, mode) => {
     }
 
     const ssContext = mode !== 'title' ? buildScreenshotContext(id, segments) : null;
-    const output = await generateWithClaude(transcript, mode, null, ssContext);
+    const output = await generateWithClaude(transcript, mode, customPromptText, ssContext);
     db.prepare(
       'INSERT INTO artifacts (recording_id, mode, content, created_at) VALUES (?, ?, ?, ?)'
-    ).run(id, mode, output, Date.now());
-    indexArtifact(id, mode, output);
+    ).run(id, displayMode, output, Date.now());
+    indexArtifact(id, displayMode, output);
     mainWindow?.webContents.send('recordings:changed');
-    auditLog('pipeline:generate', id, `mode=${mode}${ssContext ? ` with ${ssContext.length} screenshots` : ''}`);
+    auditLog('pipeline:generate', id, `mode=${displayMode}${ssContext ? ` with ${ssContext.length} screenshots` : ''}`);
     return { ok: true };
   } catch (err) {
-    auditLog('pipeline:generate', id, `mode=${mode} error: ${err.message}`);
+    auditLog('pipeline:generate', id, `mode=${displayMode} error: ${err.message}`);
     return { ok: false, error: err.message };
   }
 });
@@ -1529,6 +1564,53 @@ ipcMain.handle('pipeline:transcribeBlob', async (_evt, arrayBuf) => {
   } catch (err) {
     return { ok: false, error: err.message };
   }
+});
+
+// ---- IPC: Custom Prompts ----
+
+ipcMain.handle('prompts:list', () => {
+  return { ok: true, prompts: db.prepare('SELECT * FROM custom_prompts ORDER BY name').all() };
+});
+
+ipcMain.handle('prompts:create', (_evt, name, promptText) => {
+  if (!name?.trim() || !promptText?.trim()) return { ok: false, error: 'Name and prompt text are required' };
+  const now = Date.now();
+  const result = db.prepare(
+    'INSERT INTO custom_prompts (name, prompt_text, is_default, created_at, updated_at) VALUES (?, ?, 0, ?, ?)'
+  ).run(name.trim(), promptText.trim(), now, now);
+  auditLog('prompts:create', String(result.lastInsertRowid), `name="${name.trim()}"`);
+  return { ok: true, id: result.lastInsertRowid };
+});
+
+ipcMain.handle('prompts:update', (_evt, id, name, promptText) => {
+  if (!name?.trim() || !promptText?.trim()) return { ok: false, error: 'Name and prompt text are required' };
+  const existing = db.prepare('SELECT * FROM custom_prompts WHERE id = ?').get(id);
+  if (!existing) return { ok: false, error: 'Prompt not found' };
+  db.prepare('UPDATE custom_prompts SET name = ?, prompt_text = ?, updated_at = ? WHERE id = ?')
+    .run(name.trim(), promptText.trim(), Date.now(), id);
+  auditLog('prompts:update', String(id), `name="${name.trim()}"`);
+  return { ok: true };
+});
+
+ipcMain.handle('prompts:delete', (_evt, id) => {
+  const existing = db.prepare('SELECT * FROM custom_prompts WHERE id = ?').get(id);
+  if (!existing) return { ok: false, error: 'Prompt not found' };
+  db.prepare('DELETE FROM custom_prompts WHERE id = ?').run(id);
+  auditLog('prompts:delete', String(id), `name="${existing.name}"`);
+  return { ok: true };
+});
+
+ipcMain.handle('prompts:setDefault', (_evt, id) => {
+  db.prepare('UPDATE custom_prompts SET is_default = 0 WHERE is_default = 1').run();
+  if (id) {
+    const existing = db.prepare('SELECT * FROM custom_prompts WHERE id = ?').get(id);
+    if (!existing) return { ok: false, error: 'Prompt not found' };
+    db.prepare('UPDATE custom_prompts SET is_default = 1 WHERE id = ?').run(id);
+    auditLog('prompts:setDefault', String(id), `name="${existing.name}"`);
+  } else {
+    auditLog('prompts:setDefault', null, 'cleared default');
+  }
+  return { ok: true };
 });
 
 // ---- IPC: Settings ----

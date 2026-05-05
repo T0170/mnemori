@@ -25,7 +25,7 @@ contextBridge.exposeInMainWorld('api', {
   },
   pipeline: {
     transcribe: (id) => ipcRenderer.invoke('pipeline:transcribe', id),
-    generate: (id, mode) => ipcRenderer.invoke('pipeline:generate', id, mode),
+    generate: (id, mode, customPromptId) => ipcRenderer.invoke('pipeline:generate', id, mode, customPromptId),
     transcribeBlob: (buf) => ipcRenderer.invoke('pipeline:transcribeBlob', buf),
   },
   settings: {
@@ -82,6 +82,13 @@ contextBridge.exposeInMainWorld('api', {
     getPath: () => ipcRenderer.invoke('settings:getStoragePath'),
     choosePath: () => ipcRenderer.invoke('settings:chooseStoragePath'),
     setPath: (p) => ipcRenderer.invoke('settings:setStoragePath', p),
+  },
+  prompts: {
+    list: () => ipcRenderer.invoke('prompts:list'),
+    create: (name, promptText) => ipcRenderer.invoke('prompts:create', name, promptText),
+    update: (id, name, promptText) => ipcRenderer.invoke('prompts:update', id, name, promptText),
+    remove: (id) => ipcRenderer.invoke('prompts:delete', id),
+    setDefault: (id) => ipcRenderer.invoke('prompts:setDefault', id),
   },
   auth: {
     signIn: () => ipcRenderer.invoke('auth:sign-in'),

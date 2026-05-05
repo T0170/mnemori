@@ -1,6 +1,6 @@
 {
   "name": "mnemori",
-  "version": "0.3.2",
+  "version": "0.3.5",
   "description": "Spoken memory — narrate your screen, capture your reasoning, refine it into documentation and coaching",
   "author": "Third Feather Capital Inc",
   "license": "UNLICENSED",
@@ -53,8 +53,14 @@
     },
     "mac": {
       "target": [
-        "dmg",
-        "zip"
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["x64", "arm64"]
+        }
       ],
       "category": "public.app-category.productivity"
     }

@@ -98,12 +98,16 @@ export default function Settings() {
   const [autoGenerateMode, setAutoGenerateMode] = useState('');
   const [conceptsAutoExtract, setConceptsAutoExtract] = useState(false);
   const [pipelineDisabled, setPipelineDisabled] = useState(false);
+  const [customPrompts, setCustomPrompts] = useState([]);
+  const [editingPrompt, setEditingPrompt] = useState(null);
+  const [promptName, setPromptName] = useState('');
+  const [promptText, setPromptText] = useState('');
 
   useEffect(() => { load(); }, []);
 
   async function load() {
     try {
-      const [devices, dev, hk, at, agm, cae, ppd] = await Promise.all([
+      const [devices, dev, hk, at, agm, cae, ppd, promptsResult] = await Promise.all([
         window.api.settings.listAudioDevices(),
         window.api.settings.get('audioDevice'),
         window.api.hotkey.get(),
@@ -111,6 +115,7 @@ export default function Settings() {
         window.api.settings.get('autoGenerateMode'),
         window.api.settings.get('conceptsAutoExtract'),
         window.api.settings.get('policyAutoPipelineDisabled'),
+        window.api.prompts.list(),
       ]);
       setAudioDevices(devices);
       setSelectedDevice(dev || '');
@@ -119,10 +124,73 @@ export default function Settings() {
       setAutoGenerateMode(agm || '');
       setConceptsAutoExtract(cae === 'true');
       setPipelineDisabled(ppd === 'true');
+      if (promptsResult.ok) setCustomPrompts(promptsResult.prompts);
     } catch (err) {
       toast('Failed to load settings', 'error');
     } finally {
       setLoading(false);
+    }
+  }
+
+  function startNewPrompt() {
+    setEditingPrompt('new');
+    setPromptName('');
+    setPromptText('');
+  }
+
+  function startEditPrompt(p) {
+    setEditingPrompt(p.id);
+    setPromptName(p.name);
+    setPromptText(p.prompt_text);
+  }
+
+  function cancelEdit() {
+    setEditingPrompt(null);
+    setPromptName('');
+    setPromptText('');
+  }
+
+  async function savePrompt() {
+    if (!promptName.trim() || !promptText.trim()) {
+      toast('Name and prompt text are required', 'error');
+      return;
+    }
+    try {
+      if (editingPrompt === 'new') {
+        const result = await window.api.prompts.create(promptName, promptText);
+        if (!result.ok) { toast(result.error, 'error'); return; }
+        toast('Prompt created');
+      } else {
+        const result = await window.api.prompts.update(editingPrompt, promptName, promptText);
+        if (!result.ok) { toast(result.error, 'error'); return; }
+        toast('Prompt updated');
+      }
+      cancelEdit();
+      const r = await window.api.prompts.list();
+      if (r.ok) setCustomPrompts(r.prompts);
+    } catch (err) {
+      toast('Failed to save prompt', 'error');
+    }
+  }
+
+  async function deletePrompt(id) {
+    try {
+      await window.api.prompts.remove(id);
+      const r = await window.api.prompts.list();
+      if (r.ok) setCustomPrompts(r.prompts);
+      toast('Prompt deleted');
+    } catch (err) {
+      toast('Failed to delete prompt', 'error');
+    }
+  }
+
+  async function toggleDefault(id, currentlyDefault) {
+    try {
+      await window.api.prompts.setDefault(currentlyDefault ? null : id);
+      const r = await window.api.prompts.list();
+      if (r.ok) setCustomPrompts(r.prompts);
+    } catch (err) {
+      toast('Failed to update default', 'error');
     }
   }
 
@@ -317,6 +385,9 @@ export default function Settings() {
                           <option value="methodology">Methodology</option>
                           <option value="coaching">Coaching review</option>
                           <option value="notes">Cleaned notes</option>
+                          {customPrompts.map((p) => (
+                            <option key={p.id} value={`custom:${p.id}`}>{p.name}</option>
+                          ))}
                         </select>
                       )}
                     </div>
@@ -336,6 +407,70 @@ export default function Settings() {
                   </>
                 )}
               </>
+            )}
+          </div>
+
+          {/* ---- Custom Prompts ---- */}
+          <div className="field-group">
+            <h3>Custom prompts</h3>
+            <p className="help">
+              Create your own generation prompts. They appear alongside the built-in modes
+              on each recording. Use <code>{'{transcript}'}</code> where you want the transcript inserted,
+              or omit it and the full transcript will be sent as the user message.
+            </p>
+
+            {customPrompts.length > 0 && !editingPrompt && (
+              <div className="prompt-list">
+                {customPrompts.map((p) => (
+                  <div key={p.id} className="prompt-item">
+                    <div className="prompt-item-info">
+                      <span className="prompt-item-name">{p.name}</span>
+                      {p.is_default === 1 && <span className="prompt-item-default">default</span>}
+                    </div>
+                    <div className="prompt-item-actions">
+                      <button className="btn btn-ghost btn-sm" onClick={() => toggleDefault(p.id, p.is_default === 1)}>
+                        {p.is_default === 1 ? 'Unset default' : 'Set as default'}
+                      </button>
+                      <button className="btn btn-ghost btn-sm" onClick={() => startEditPrompt(p)}>Edit</button>
+                      <button className="btn btn-ghost btn-sm" style={{ color: 'var(--ember)' }} onClick={() => deletePrompt(p.id)}>Delete</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {editingPrompt ? (
+              <div className="prompt-editor">
+                <div className="field">
+                  <label>Name</label>
+                  <input
+                    className="input"
+                    value={promptName}
+                    onChange={(e) => setPromptName(e.target.value)}
+                    placeholder="e.g. Client Summary, Risk Assessment"
+                  />
+                </div>
+                <div className="field" style={{ marginTop: 12 }}>
+                  <label>Prompt</label>
+                  <textarea
+                    className="input prompt-textarea"
+                    value={promptText}
+                    onChange={(e) => setPromptText(e.target.value)}
+                    placeholder="You are an expert analyst reviewing a narrated screen recording..."
+                    rows={10}
+                  />
+                </div>
+                <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                  <button className="btn btn-primary btn-sm" onClick={savePrompt}>
+                    {editingPrompt === 'new' ? 'Create prompt' : 'Save changes'}
+                  </button>
+                  <button className="btn btn-ghost btn-sm" onClick={cancelEdit}>Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <button className="btn btn-ghost btn-sm" onClick={startNewPrompt} style={{ marginTop: 12 }}>
+                + New prompt
+              </button>
             )}
           </div>
 

@@ -32,6 +32,7 @@ export default function RecordingDetail() {
   const [projects, setProjects] = useState([]);
   const [activeSegment, setActiveSegment] = useState(-1);
   const [showGallery, setShowGallery] = useState(false);
+  const [customPrompts, setCustomPrompts] = useState([]);
 
   const videoRef = useRef(null);
   const transcriptRef = useRef(null);
@@ -41,6 +42,7 @@ export default function RecordingDetail() {
   useEffect(() => {
     load();
     loadProjects();
+    loadCustomPrompts();
     const unsub = window.api.recordings.onChanged(load);
     return unsub;
   }, [id]);
@@ -55,6 +57,13 @@ export default function RecordingDetail() {
   async function loadProjects() {
     const list = await window.api.projects.list();
     setProjects(list);
+  }
+
+  async function loadCustomPrompts() {
+    try {
+      const r = await window.api.prompts.list();
+      if (r.ok) setCustomPrompts(r.prompts);
+    } catch (_) {}
   }
 
   async function load() {
@@ -119,11 +128,12 @@ export default function RecordingDetail() {
     else toast(result.error, 'error');
   }
 
-  async function generate(mode) {
-    setBusy(mode);
-    const result = await window.api.pipeline.generate(id, mode);
+  async function generate(mode, customPromptId) {
+    const busyKey = customPromptId ? `custom:${customPromptId}` : mode;
+    setBusy(busyKey);
+    const result = await window.api.pipeline.generate(id, mode, customPromptId || undefined);
     setBusy(null);
-    if (result.ok) toast(`${mode} generated`);
+    if (result.ok) toast(`${customPromptId ? 'Custom prompt' : mode} generated`);
     else toast(result.error, 'error');
   }
 
@@ -386,7 +396,7 @@ export default function RecordingDetail() {
                 {recording.artifacts.map((a) => (
                   <div key={a.id} className="artifact">
                     <div className="artifact-head">
-                      <div className="artifact-mode">{a.mode}</div>
+                      <div className="artifact-mode">{a.mode.startsWith('custom:') ? a.mode.slice(7) : a.mode}</div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                         <button className="btn btn-ghost btn-sm" onClick={() => copyArtifact(a.content, a.mode)}>
                           Copy
@@ -490,6 +500,16 @@ export default function RecordingDetail() {
                     onClick={() => generate(m.id)}
                   >
                     {busy === m.id ? `${m.label}…` : `+ ${m.label}`}
+                  </button>
+                ))}
+                {customPrompts.map((p) => (
+                  <button
+                    key={`cp-${p.id}`}
+                    className="gen-chip gen-chip-custom"
+                    disabled={!canGenerate || busy}
+                    onClick={() => generate(null, p.id)}
+                  >
+                    {busy === `custom:${p.id}` ? `${p.name}…` : `+ ${p.name}`}
                   </button>
                 ))}
               </div>

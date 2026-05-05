@@ -4,6 +4,14 @@ All notable changes to Mnemori are documented here. Format follows [Keep a Chang
 
 ---
 
+## [0.3.5] — 2026-05-05
+
+### Added
+- **Custom prompts** — Create your own generation prompts in Settings. Each custom prompt gets a name and prompt text, appears alongside the four built-in modes (SOP, Methodology, Coaching, Notes) on every recording's detail page, and can be set as the default for auto-pipeline. Use `{transcript}` in your prompt text to control where the transcript is inserted. Stored in SQLite, CRUD managed via IPC with full audit logging.
+- **Custom prompts in auto-pipeline** — The auto-generate dropdown in Settings now includes your custom prompts. Select one and it runs automatically after transcription, just like the built-in modes.
+
+---
+
 ## [0.3.2] — 2026-05-05
 
 ### Added
