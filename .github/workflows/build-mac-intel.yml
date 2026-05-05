@@ -1,0 +1,43 @@
+name: Build macOS Intel
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-13
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Inject default API keys
+        if: env.DEFAULT_OPENAI_KEY != ''
+        env:
+          DEFAULT_OPENAI_KEY: ${{ secrets.DEFAULT_OPENAI_KEY }}
+          DEFAULT_ANTHROPIC_KEY: ${{ secrets.DEFAULT_ANTHROPIC_KEY }}
+        run: |
+          echo "{\"openai\":\"$DEFAULT_OPENAI_KEY\",\"anthropic\":\"$DEFAULT_ANTHROPIC_KEY\"}" > src/main/default-keys.json
+
+      - name: Build and publish
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx vite build && npx electron-builder --publish always --x64
+
+      - name: Upload macOS Intel DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: Mnemori-macOS-Intel
+          path: dist/*.dmg
+          if-no-files-found: error
