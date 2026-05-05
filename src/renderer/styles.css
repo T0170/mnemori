@@ -251,6 +251,39 @@ a { color: inherit; text-decoration: none; }
 
 .sidebar-footer { padding-top: 12px; }
 
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--moss);
+  border-radius: var(--radius);
+  margin-bottom: 12px;
+}
+
+.update-banner-text {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--paper);
+}
+
+.update-banner-btn {
+  background: var(--paper);
+  color: var(--moss);
+  border: none;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.update-banner-btn:hover {
+  background: var(--paper-2);
+}
+
 /* ---- Recording control card ---- */
 .record-card {
   background: var(--ink);

@@ -4,6 +4,19 @@ All notable changes to Mnemori are documented here. Format follows [Keep a Chang
 
 ---
 
+## [0.3.2] — 2026-05-05
+
+### Added
+- **Auto-updates** — The app checks for updates on launch and downloads them in the background. When a new version is ready, a subtle banner appears in the sidebar offering to restart. Updates install silently on quit — no manual re-downloading required. Powered by `electron-updater` with GitHub Releases as the update source.
+- **Manual update check** — `update:check` IPC handler available for future UI integration (e.g. "Check for updates" button in Settings).
+
+### Changed
+- **CI publishes update manifests** — Build workflow now runs `electron-builder --publish always`, which uploads `latest.yml` and `latest-mac.yml` alongside installers. These files are what the auto-updater reads to detect new versions.
+- **macOS zip target** — macOS builds now produce both DMG (for first-time download) and zip (required for auto-update delivery).
+- **Repository URL corrected** — package.json `repository.url` now points to the actual GitHub repo (`T0170/mnemori`).
+
+---
+
 ## [0.3.1] — 2026-05-01
 
 ### Added

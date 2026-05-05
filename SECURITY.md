@@ -2,7 +2,7 @@
 
 This document describes Mnemori's current security posture, the controls in place, and known limitations. It is maintained alongside every code change that affects security.
 
-Last updated: 2026-05-02
+Last updated: 2026-05-05
 
 ---
 
@@ -13,6 +13,7 @@ Mnemori is a local-first desktop application. All data — recordings, transcrip
 1. **OpenAI Whisper API** — audio files are sent for transcription when the user explicitly initiates it
 2. **Anthropic Claude API** — transcript text is sent for document generation when the user explicitly initiates it
 3. **Clerk** — identity and authentication only. Clerk receives email, name, and session data. It never receives recordings, transcripts, or artifacts. Authentication is optional; unauthenticated users operate as self-sovereign Owners.
+4. **GitHub Releases API** — the auto-updater checks `api.github.com` for new releases on launch. Only the app version is compared; no user data is transmitted. Update binaries are downloaded directly from GitHub's CDN over HTTPS.
 
 Both API calls use HTTPS with API keys the user provides. Clerk communication uses HTTPS — the desktop app opens a modal BrowserWindow to `mnemori.app/auth.html` where Clerk JS runs on the real domain. No Clerk SDK loads in the renderer; only the publishable key is used (no secret keys in client code).
 
@@ -151,6 +152,7 @@ Mnemori uses Electron's security model:
 | API keys sent to OpenAI/Anthropic over HTTPS | Low | Standard API usage. Keys are user-provided and user-controlled. | Accepted |
 | No application-level authentication | Medium | Clerk auth implemented (optional). Unauthenticated users default to Owner. Role enforcement at UI + IPC. | **Fixed** |
 | Unsigned application binary | Medium | SmartScreen/Gatekeeper warnings on first run. Code signing with Third Feather Capital Inc certificate planned pre-launch. | Open |
+| Auto-updater without code signing | Medium | Updates are downloaded over HTTPS from GitHub. Without code signing, the binary cannot be cryptographically verified as originating from the publisher. Mitigated by HTTPS transport security and GitHub's infrastructure. Code signing will close this gap. | Open |
 | ffmpeg binary not integrity-checked | Low | Bundled via ffmpeg-static (npm verified). System ffmpeg falls back to PATH. | Open |
 
 ## Dependency vulnerabilities (npm audit 2026-05-01)

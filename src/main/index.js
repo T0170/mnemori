@@ -20,6 +20,8 @@ const Database = require('better-sqlite3');
 const OpenAI = require('openai');
 const Anthropic = require('@anthropic-ai/sdk').default || require('@anthropic-ai/sdk');
 
+const { autoUpdater } = require('electron-updater');
+
 const isDev = !app.isPackaged;
 const isMac = process.platform === 'darwin';
 
@@ -1291,6 +1293,30 @@ app.whenReady().then(() => {
       });
     }).on('error', () => {});
   } catch (_) {}
+
+  // ---- Auto-updater ----
+  if (!isDev) {
+    autoUpdater.autoDownload = true;
+    autoUpdater.autoInstallOnAppQuit = true;
+
+    autoUpdater.on('update-available', (info) => {
+      auditLog('update:available', null, `v${info.version}`);
+      mainWindow?.webContents.send('update:available', info.version);
+    });
+
+    autoUpdater.on('update-downloaded', (info) => {
+      auditLog('update:downloaded', null, `v${info.version}`);
+      mainWindow?.webContents.send('update:downloaded', info.version);
+    });
+
+    autoUpdater.on('error', (err) => {
+      console.error('Auto-updater error:', err.message);
+    });
+
+    setTimeout(() => {
+      autoUpdater.checkForUpdates().catch(() => {});
+    }, 15000);
+  }
 });
 
 app.on('window-all-closed', () => {
@@ -1688,6 +1714,21 @@ ipcMain.handle('system:showItemInFolder', (_evt, p) => {
 ipcMain.handle('system:copyToClipboard', (_evt, text) => {
   clipboard.writeText(text);
   return { ok: true };
+});
+
+ipcMain.handle('update:install', () => {
+  auditLog('update:installing', null, 'user triggered restart to update');
+  autoUpdater.quitAndInstall(false, true);
+});
+
+ipcMain.handle('update:check', async () => {
+  if (isDev) return { ok: false, error: 'Updates disabled in dev mode' };
+  try {
+    const result = await autoUpdater.checkForUpdates();
+    return { ok: true, version: result?.updateInfo?.version || null };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
 });
 
 function markdownToHtml(md) {

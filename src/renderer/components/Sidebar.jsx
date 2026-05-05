@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
 import RecordingControl from './RecordingControl';
@@ -6,7 +6,16 @@ import RecordingControl from './RecordingControl';
 export default function Sidebar({ onRecordingChanged }) {
   const { isSignedIn, user, roleName, can, signIn, signOut, requireAuth } = useAuth();
   const [quickSearch, setQuickSearch] = useState('');
+  const [updateReady, setUpdateReady] = useState(null);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    if (!window.api?.updater) return;
+    const unsub = window.api.updater.onUpdateDownloaded((version) => {
+      setUpdateReady(version);
+    });
+    return unsub;
+  }, []);
 
   function handleSearchSubmit(e) {
     e.preventDefault();
@@ -82,6 +91,15 @@ export default function Sidebar({ onRecordingChanged }) {
           </button>
         )}
       </div>
+
+      {updateReady && (
+        <div className="update-banner">
+          <span className="update-banner-text">v{updateReady} ready</span>
+          <button className="btn btn-sm update-banner-btn" onClick={() => window.api.updater.install()}>
+            Restart to update
+          </button>
+        </div>
+      )}
 
       <div className="sidebar-footer">
         {requireAuth ? (

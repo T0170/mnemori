@@ -87,4 +87,18 @@ contextBridge.exposeInMainWorld('api', {
     signIn: () => ipcRenderer.invoke('auth:sign-in'),
     signOut: () => ipcRenderer.invoke('auth:sign-out'),
   },
+  updater: {
+    install: () => ipcRenderer.invoke('update:install'),
+    check: () => ipcRenderer.invoke('update:check'),
+    onUpdateAvailable: (callback) => {
+      const listener = (_evt, version) => callback(version);
+      ipcRenderer.on('update:available', listener);
+      return () => ipcRenderer.removeListener('update:available', listener);
+    },
+    onUpdateDownloaded: (callback) => {
+      const listener = (_evt, version) => callback(version);
+      ipcRenderer.on('update:downloaded', listener);
+      return () => ipcRenderer.removeListener('update:downloaded', listener);
+    },
+  },
 });

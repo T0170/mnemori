@@ -1,13 +1,13 @@
 {
   "name": "mnemori",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Spoken memory — narrate your screen, capture your reasoning, refine it into documentation and coaching",
   "author": "Third Feather Capital Inc",
   "license": "UNLICENSED",
   "homepage": "https://mnemori.app",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mnemori/mnemori-app"
+    "url": "https://github.com/T0170/mnemori"
   },
   "private": true,
   "main": "src/main/index.js",
@@ -23,6 +23,11 @@
   "build": {
     "appId": "com.mnemori.app",
     "productName": "Mnemori",
+    "publish": {
+      "provider": "github",
+      "owner": "T0170",
+      "repo": "mnemori"
+    },
     "files": [
       "src/main/**/*",
       "dist/**/*"
@@ -47,13 +52,17 @@
       "uninstallerIcon": "build/icon.ico"
     },
     "mac": {
-      "target": "dmg",
+      "target": [
+        "dmg",
+        "zip"
+      ],
       "category": "public.app-category.productivity"
     }
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.92.0",
     "better-sqlite3": "^11.5.0",
+    "electron-updater": "^6.8.3",
     "ffmpeg-static": "^5.3.0",
     "openai": "^6.35.0",
     "react": "^18.3.1",
