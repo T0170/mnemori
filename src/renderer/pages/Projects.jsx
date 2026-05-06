@@ -17,6 +17,7 @@ export default function Projects() {
   const [newName, setNewName] = useState('');
   const [newDesc, setNewDesc] = useState('');
   const [generating, setGenerating] = useState(false);
+  const [defaultArtifact, setDefaultArtifact] = useState('');
 
   useEffect(() => { loadProjects(); }, []);
   useEffect(() => { if (id) loadDetail(id); else setDetail(null); }, [id]);
@@ -35,9 +36,16 @@ export default function Projects() {
     try {
       const data = await window.api.projects.get(projId);
       setDetail(data);
+      setDefaultArtifact(data?.default_artifact_type || '');
     } catch (err) {
       toast('Failed to load project', 'error');
     }
+  }
+
+  async function updateDefaultArtifact(value) {
+    setDefaultArtifact(value);
+    await window.api.projects.update(detail.id, { default_artifact_type: value });
+    toast(value ? `Default set to ${value}` : 'Default cleared');
   }
 
   async function createProject() {
@@ -122,10 +130,27 @@ export default function Projects() {
         </div>
         <div className="content">
           {detail.description && (
-            <p style={{ color: 'var(--ink-3)', marginBottom: 24, fontStyle: 'italic' }}>
+            <p style={{ color: 'var(--ink-3)', marginBottom: 16, fontStyle: 'italic' }}>
               {detail.description}
             </p>
           )}
+
+          <div className="field" style={{ maxWidth: 320, marginBottom: 24 }}>
+            <label style={{ fontSize: 12, color: 'var(--ink-3)', marginBottom: 4 }}>Default artifact type</label>
+            <select
+              className="select"
+              value={defaultArtifact}
+              onChange={(e) => updateDefaultArtifact(e.target.value)}
+            >
+              <option value="">— use global setting —</option>
+              <option value="sop">SOP</option>
+              <option value="methodology">Methodology</option>
+              <option value="coaching">Coaching review</option>
+              <option value="notes">Cleaned notes</option>
+              <option value="checklist">Checklist</option>
+              <option value="executive_summary">Executive summary</option>
+            </select>
+          </div>
 
           {/* Project summary section */}
           <div className="project-summary-section">
@@ -177,6 +202,32 @@ export default function Projects() {
               )}
             </div>
           </div>
+
+          {/* Decay alerts */}
+          {detail.decayAlerts && detail.decayAlerts.length > 0 && (
+            <div style={{ marginTop: 32 }}>
+              <div className="section-heading">
+                <span>Documentation <em>alerts</em></span>
+              </div>
+              {detail.decayAlerts.map((alert) => (
+                <div key={alert.id} className="decay-alert">
+                  <div className="decay-alert-header">
+                    <span className="decay-alert-mode">{alert.artifact_mode}</span>
+                    <span className="decay-alert-label">may be outdated</span>
+                  </div>
+                  <p className="decay-alert-summary">{alert.divergence_summary}</p>
+                  <div className="decay-alert-actions">
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => navigate(`/recording/${alert.recording_id}`)}
+                    >
+                      View recording
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Recordings section */}
           <div style={{ marginTop: 40 }}>

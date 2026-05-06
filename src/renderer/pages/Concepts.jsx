@@ -208,6 +208,7 @@ const METRIC_OPTIONS = [
   { value: 'hedging_count', label: 'Hedging language', direction: 'decrease', unit: 'per session' },
   { value: 'self_corrections', label: 'Self-corrections', direction: 'decrease', unit: 'per session' },
   { value: 'confidence_score', label: 'Confidence', direction: 'increase', unit: '%', format: (v) => Math.round(v * 100) },
+  { value: 'reasoning_density', label: 'Reasoning density', direction: 'increase', unit: '%', format: (v) => Math.round(v * 100) },
 ];
 
 const MILESTONE_ICONS = { Trending: '↗', Streak: '⚡', Mastered: '✦' };
@@ -421,7 +422,7 @@ export default function Concepts() {
   const aggregated = useMemo(() => {
     if (insights.length === 0) return null;
 
-    let totalFillers = 0, totalCorrections = 0, totalHedging = 0, totalConfidence = 0;
+    let totalFillers = 0, totalCorrections = 0, totalHedging = 0, totalConfidence = 0, totalReasoning = 0;
     const allTopics = {};
     const allConcepts = {};
     const allStrengths = {};
@@ -432,6 +433,7 @@ export default function Concepts() {
       totalCorrections += ins.self_corrections;
       totalHedging += ins.hedging_count;
       totalConfidence += ins.confidence_score;
+      totalReasoning += (ins.reasoning_density || 0);
 
       const safeParse = (val) => { try { return JSON.parse(val || '[]'); } catch (_) { return []; } };
       for (const t of safeParse(ins.topics)) {
@@ -456,6 +458,7 @@ export default function Concepts() {
       avgCorrections: Math.round(totalCorrections / insights.length * 10) / 10,
       avgHedging: Math.round(totalHedging / insights.length * 10) / 10,
       avgConfidence: Math.round(totalConfidence / insights.length * 100),
+      avgReasoning: Math.round(totalReasoning / insights.length * 100),
       topics: sortByCount(allTopics).slice(0, 12),
       concepts: sortByCount(allConcepts).slice(0, 15),
       strengths: sortByCount(allStrengths).slice(0, 6),
@@ -601,6 +604,10 @@ export default function Concepts() {
                   <div className="concepts-stat">
                     <div className="concepts-stat-value">{aggregated.avgHedging}</div>
                     <div className="concepts-stat-label">avg hedging / session</div>
+                  </div>
+                  <div className="concepts-stat">
+                    <div className="concepts-stat-value">{aggregated.avgReasoning}%</div>
+                    <div className="concepts-stat-label">reasoning density</div>
                   </div>
                 </div>
 

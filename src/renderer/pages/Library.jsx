@@ -18,6 +18,7 @@ export default function Library({ refreshKey }) {
   const [projects, setProjects] = useState([]);
   const [assigning, setAssigning] = useState(null);
   const [contentHits, setContentHits] = useState([]);
+  const [decayCount, setDecayCount] = useState(0);
   const debounceRef = useRef(null);
   const navigate = useNavigate();
   const toast = useToast();
@@ -42,7 +43,8 @@ export default function Library({ refreshKey }) {
   useEffect(() => {
     load();
     loadProjects();
-    const unsub = window.api.recordings.onChanged(() => { load(); loadProjects(); });
+    loadDecayCount();
+    const unsub = window.api.recordings.onChanged(() => { load(); loadProjects(); loadDecayCount(); });
     return unsub;
   }, [refreshKey]);
 
@@ -73,6 +75,13 @@ export default function Library({ refreshKey }) {
     try {
       const list = await window.api.projects.list();
       setProjects(list);
+    } catch (_) {}
+  }
+
+  async function loadDecayCount() {
+    try {
+      const alerts = await window.api.decay.list();
+      setDecayCount(alerts.length);
     } catch (_) {}
   }
 
@@ -201,6 +210,12 @@ export default function Library({ refreshKey }) {
           </div>
         </div>
 
+        {decayCount > 0 && (
+          <div className="decay-banner">
+            {decayCount} document{decayCount === 1 ? '' : 's'} may be outdated — review from the recording detail page
+          </div>
+        )}
+
         {filtered.length === 0 && contentResults.length === 0 ? (
           <div className="empty" style={{ paddingTop: 48 }}>
             <div className="empty-mark">ø</div>
@@ -250,6 +265,11 @@ export default function Library({ refreshKey }) {
                     {r.artifact_count > 0 ? `${r.artifact_count} doc${r.artifact_count === 1 ? '' : 's'}` : '—'}
                   </div>
                   <div className="duration">{formatDuration(r.duration_seconds)}</div>
+                  {r.reasoning_density != null && (
+                    <div className="reasoning-indicator" title={`Reasoning density: ${Math.round(r.reasoning_density * 100)}%`}>
+                      <span className={`reasoning-dot reasoning-${r.reasoning_density >= 0.6 ? 'rich' : r.reasoning_density >= 0.3 ? 'moderate' : 'thin'}`} />
+                    </div>
+                  )}
                   <div
                     className="row-assign"
                     onClick={(e) => { e.stopPropagation(); setAssigning(assigning === r.id ? null : r.id); }}

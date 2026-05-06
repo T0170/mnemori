@@ -53,12 +53,33 @@ const dbPath = path.join(userDataDir, 'mnemori.db');
 if (!fs.existsSync(defaultRecordingsDir)) fs.mkdirSync(defaultRecordingsDir, { recursive: true });
 
 // ---- ffmpeg resolution ----
+function verifyFfmpegIntegrity(ffmpegPath) {
+  try {
+    const integrityPath = path.join(__dirname, 'ffmpeg-integrity.json');
+    if (!fs.existsSync(integrityPath)) return;
+    const expected = JSON.parse(fs.readFileSync(integrityPath, 'utf-8'));
+    const platform = process.platform === 'win32' ? 'win32' : process.platform === 'darwin' ? 'darwin' : 'linux';
+    if (!expected[platform]) return;
+    const hash = crypto.createHash('sha256');
+    const buf = fs.readFileSync(ffmpegPath);
+    hash.update(buf);
+    const actual = hash.digest('hex');
+    if (actual !== expected[platform]) {
+      console.warn('ffmpeg integrity mismatch — expected', expected[platform].slice(0, 12), 'got', actual.slice(0, 12));
+      auditLog('integrity:ffmpeg-mismatch', ffmpegPath, `expected=${expected[platform].slice(0, 16)} actual=${actual.slice(0, 16)}`);
+    }
+  } catch (_) {}
+}
+
 function findFfmpeg() {
   // Prefer bundled ffmpeg-static
   try {
     let staticPath = require('ffmpeg-static');
     if (!isDev) staticPath = staticPath.replace('app.asar', 'app.asar.unpacked');
-    if (fs.existsSync(staticPath)) return staticPath;
+    if (fs.existsSync(staticPath)) {
+      verifyFfmpegIntegrity(staticPath);
+      return staticPath;
+    }
   } catch (_) {}
 
   // Fall back to system-installed ffmpeg
@@ -149,7 +170,25 @@ db.exec(`
   );
 `);
 
+try { db.exec('ALTER TABLE audit_log ADD COLUMN prev_hash TEXT DEFAULT ""'); } catch (_) {}
+
 try { db.exec('ALTER TABLE projects ADD COLUMN summary TEXT DEFAULT ""'); } catch (_) {}
+try { db.exec('ALTER TABLE projects ADD COLUMN default_artifact_type TEXT DEFAULT ""'); } catch (_) {}
+try { db.exec('ALTER TABLE profile_insights ADD COLUMN reasoning_density REAL DEFAULT 0'); } catch (_) {}
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS decay_alerts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    recording_id TEXT NOT NULL,
+    artifact_id INTEGER NOT NULL,
+    divergence_summary TEXT NOT NULL,
+    changes_json TEXT DEFAULT '[]',
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at INTEGER NOT NULL,
+    FOREIGN KEY (recording_id) REFERENCES recordings(id),
+    FOREIGN KEY (artifact_id) REFERENCES artifacts(id)
+  );
+`);
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS profile (
@@ -245,7 +284,7 @@ function rebuildSearchIndex() {
   for (const rec of recordings) {
     try {
       if (rec.transcript_path && fs.existsSync(rec.transcript_path)) {
-        const text = fs.readFileSync(rec.transcript_path, 'utf-8');
+        const text = decryptFileToString(rec.transcript_path);
         indexTranscript(rec.id, text);
       }
     } catch (_) {}
@@ -257,11 +296,17 @@ function rebuildSearchIndex() {
   }
 }
 
-// ---- Audit logging ----
+// ---- Audit logging (hash-chained for tamper detection) ----
 function auditLog(action, target = null, detail = null) {
+  const ts = Date.now();
+  const last = db.prepare('SELECT prev_hash FROM audit_log ORDER BY id DESC LIMIT 1').get();
+  const lastHash = (last && last.prev_hash) || '';
+  const hash = crypto.createHash('sha256')
+    .update(`${ts}|${action}|${target || ''}|${detail || ''}|${lastHash}`)
+    .digest('hex');
   db.prepare(
-    'INSERT INTO audit_log (timestamp, action, target, detail) VALUES (?, ?, ?, ?)'
-  ).run(Date.now(), action, target, detail);
+    'INSERT INTO audit_log (timestamp, action, target, detail, prev_hash) VALUES (?, ?, ?, ?, ?)'
+  ).run(ts, action, target, detail, hash);
 }
 
 // ---- Secure credential storage ----
@@ -309,6 +354,106 @@ function secureDelete(filePath) {
   } catch (_) {
     try { fs.unlinkSync(filePath); } catch (_) {}
   }
+}
+
+// ---- Encryption at rest (AES-256-GCM) ----
+const EAR_MAGIC = Buffer.from('MNMR');
+const EAR_VERSION = 1;
+const EAR_HEADER_SIZE = 4 + 1 + 12 + 16; // magic(4) + version(1) + iv(12) + tag(16) = 33 bytes
+
+let masterKeyCache = null;
+
+function getMasterKey() {
+  if (masterKeyCache) return masterKeyCache;
+
+  const keyPath = path.join(userDataDir, '.encryption-key');
+
+  if (fs.existsSync(keyPath)) {
+    try {
+      const encrypted = fs.readFileSync(keyPath);
+      masterKeyCache = safeStorage.decryptString(encrypted);
+      return masterKeyCache;
+    } catch (err) {
+      console.error('Failed to decrypt master key:', err.message);
+      return null;
+    }
+  }
+
+  if (!safeStorage.isEncryptionAvailable()) return null;
+
+  const key = crypto.randomBytes(32).toString('hex');
+  const encrypted = safeStorage.encryptString(key);
+  fs.writeFileSync(keyPath, encrypted);
+  masterKeyCache = key;
+  auditLog('encryption:key-generated', null, 'master encryption key created');
+  return masterKeyCache;
+}
+
+function deriveFileKey(masterKeyHex, filePath) {
+  const masterBuf = Buffer.from(masterKeyHex, 'hex');
+  return crypto.hkdfSync('sha256', masterBuf, Buffer.from(filePath, 'utf-8'), Buffer.from('mnemori-ear-v1'), 32);
+}
+
+function isEncryptedFile(filePath) {
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const header = Buffer.alloc(5);
+    fs.readSync(fd, header, 0, 5, 0);
+    fs.closeSync(fd);
+    return header.slice(0, 4).equals(EAR_MAGIC) && header[4] === EAR_VERSION;
+  } catch (_) {
+    return false;
+  }
+}
+
+function encryptFileInPlace(filePath) {
+  const masterKey = getMasterKey();
+  if (!masterKey) return false;
+  if (!fs.existsSync(filePath)) return false;
+  if (isEncryptedFile(filePath)) return true;
+
+  const plaintext = fs.readFileSync(filePath);
+  const fileKey = deriveFileKey(masterKey, filePath);
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', fileKey, iv);
+  const encrypted = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const tag = cipher.getAuthTag();
+
+  const output = Buffer.concat([EAR_MAGIC, Buffer.from([EAR_VERSION]), iv, tag, encrypted]);
+  fs.writeFileSync(filePath, output);
+  return true;
+}
+
+function decryptFileToBuffer(filePath) {
+  if (!fs.existsSync(filePath)) return null;
+  if (!isEncryptedFile(filePath)) return fs.readFileSync(filePath);
+
+  const masterKey = getMasterKey();
+  if (!masterKey) return null;
+
+  const raw = fs.readFileSync(filePath);
+  const iv = raw.slice(5, 17);
+  const tag = raw.slice(17, 33);
+  const ciphertext = raw.slice(33);
+
+  const fileKey = deriveFileKey(masterKey, filePath);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', fileKey, iv);
+  decipher.setAuthTag(tag);
+
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+}
+
+function decryptFileToString(filePath) {
+  const buf = decryptFileToBuffer(filePath);
+  return buf ? buf.toString('utf-8') : null;
+}
+
+function isEncryptionEnabled() {
+  return getSetting('encryptionAtRest') === 'true';
+}
+
+function encryptIfEnabled(filePath) {
+  if (isEncryptionEnabled()) encryptFileInPlace(filePath);
 }
 
 // ---- Data retention ----
@@ -376,6 +521,43 @@ function migrateCredentials() {
       auditLog('credential:migrated', key, 'migrated from plaintext to encrypted storage');
     }
   }
+}
+
+// ---- Encryption migration (encrypt existing unencrypted files) ----
+function migrateEncryption(progressCallback) {
+  const masterKey = getMasterKey();
+  if (!masterKey) return { ok: false, error: 'Encryption not available on this system' };
+
+  const recordings = db.prepare('SELECT id, video_path, audio_path, transcript_path FROM recordings').all();
+  const screenshots = db.prepare('SELECT file_path FROM screenshots').all();
+
+  const filesToEncrypt = [];
+  for (const rec of recordings) {
+    if (rec.video_path && fs.existsSync(rec.video_path)) filesToEncrypt.push(rec.video_path);
+    if (rec.audio_path && fs.existsSync(rec.audio_path)) filesToEncrypt.push(rec.audio_path);
+    if (rec.transcript_path && fs.existsSync(rec.transcript_path)) filesToEncrypt.push(rec.transcript_path);
+    const jsonPath = rec.audio_path?.replace(/\.wav$/, '.json');
+    if (jsonPath && fs.existsSync(jsonPath)) filesToEncrypt.push(jsonPath);
+  }
+  for (const ss of screenshots) {
+    if (ss.file_path && fs.existsSync(ss.file_path)) filesToEncrypt.push(ss.file_path);
+  }
+
+  let encrypted = 0;
+  let skipped = 0;
+  for (let i = 0; i < filesToEncrypt.length; i++) {
+    const f = filesToEncrypt[i];
+    if (isEncryptedFile(f)) { skipped++; continue; }
+    try {
+      encryptFileInPlace(f);
+      encrypted++;
+    } catch (_) { skipped++; }
+    if (progressCallback && i % 5 === 0) progressCallback(i + 1, filesToEncrypt.length);
+  }
+
+  setSetting('encryptionAtRest', 'true');
+  auditLog('encryption:migration', null, `encrypted=${encrypted} skipped=${skipped} total=${filesToEncrypt.length}`);
+  return { ok: true, encrypted, skipped, total: filesToEncrypt.length };
 }
 
 // ---- Prompts ----
@@ -555,7 +737,86 @@ Rules:
 
 TRANSCRIPTS:
 {transcript}`,
+
+  checklist: `You are converting a narrated screen recording transcript into a clean, actionable checklist that someone can follow step-by-step to replicate the procedure.
+
+The transcript is raw speech — expect filler words, tangents, self-corrections, and thinking out loud. Extract only the concrete actions.
+
+Produce a numbered checklist in this format:
+
+# [Specific title of the procedure] — Checklist
+
+- [ ] Step 1: [Direct instruction — what to do, where to do it]
+- [ ] Step 2: [Next concrete action]
+- [ ] Step 3: [Continue...]
+
+Rules:
+- Every item must be a single, verifiable action. Not "Set up the system" but "Open Settings > API > Enter the key from the dashboard."
+- Include specific UI paths, field names, values, and commands mentioned by the narrator.
+- If the narrator did something, corrected themselves, and did it differently — only include the correct version.
+- Omit reasoning, context, and explanation — this is a DO list, not a KNOW list.
+- If there are prerequisites (accounts, tools, permissions needed), list them as the first items.
+- Group related steps under subheadings if the procedure has distinct phases.
+- Aim for 5-25 items depending on procedure complexity.
+
+TRANSCRIPT:
+{transcript}`,
+
+  executive_summary: `You are producing a concise executive summary from a narrated screen recording — the kind of summary a manager or stakeholder reads to understand what happened without watching the recording or reading the full transcript.
+
+The transcript is raw speech — expect filler, false starts, and thinking out loud. Your job is to extract the signal.
+
+Produce exactly this structure:
+
+# Summary: [Descriptive title]
+
+**What was done:** [1-2 sentences describing the activity]
+
+**Key decisions:** [Bulleted list of decisions made and their rationale — 2-5 items]
+
+**Outcome:** [1-2 sentences on the result or current state]
+
+**Open items:** [Any unresolved questions or next steps mentioned. Omit if none.]
+
+Rules:
+- Total length: 3-8 sentences plus bullets. Ruthlessly concise.
+- Use the narrator's own terminology for systems, tools, and concepts.
+- Focus on decisions and outcomes, not mechanical steps.
+- If the narrator expressed uncertainty about something, note it in Open items.
+- Write for someone who has 30 seconds to read this.
+
+TRANSCRIPT:
+{transcript}`,
 };
+
+const DECAY_CHECK_PROMPT = `You are comparing an existing documentation artifact against a new transcript of someone performing the same or similar process. Your job is to identify meaningful procedural divergences — places where the documentation says one thing but the person actually did something different.
+
+Focus ONLY on procedural changes: different steps, different tools, different order, new steps, removed steps, different values or settings. Ignore:
+- Stylistic differences in how something is described
+- The narrator's tangents, filler words, or thinking out loud
+- Minor variations in terminology that don't change the meaning
+
+Return ONLY valid JSON with this structure — no markdown, no code fences:
+
+{
+  "has_divergence": <true or false>,
+  "summary": "<1-2 sentence summary of what changed, or 'No meaningful divergence detected' if none>",
+  "changes": [
+    {
+      "artifact_says": "<what the existing doc describes>",
+      "recording_shows": "<what was actually done in the new recording>",
+      "severity": "<minor|moderate|major>"
+    }
+  ]
+}
+
+If has_divergence is false, changes should be an empty array.
+
+EXISTING ARTIFACT:
+{artifact}
+
+NEW TRANSCRIPT:
+{transcript}`;
 
 const EXTRACT_PROMPT = `Analyze this transcript of a narrated screen recording for communication patterns and concepts. Return ONLY valid JSON with this exact structure — no markdown, no code fences, no explanation:
 
@@ -564,10 +825,12 @@ const EXTRACT_PROMPT = `Analyze this transcript of a narrated screen recording f
   "self_corrections": <number of times the speaker corrected themselves: "wait no", "actually", "I mean", backtracking>,
   "hedging_count": <number of hedging phrases: "I think maybe", "I'm not sure", "probably", "kind of", "I guess">,
   "confidence_score": <0.0 to 1.0 — how confidently the speaker communicated overall. 1.0 = authoritative and fluid, 0.0 = deeply uncertain>,
+  "reasoning_density": <0.0 to 1.0 — how much "why" reasoning the recording contains. 1.0 = rich in decision rationale, trade-offs, and explanations. 0.0 = purely mechanical description with no reasoning. Look for: "because", "the reason is", "I chose this over", "the trade-off is", "why not", explanations of decisions>,
   "topics": [<list of 3-8 specific topics discussed, as short strings>],
   "concepts": [<technical terms, tools, or domain-specific concepts mentioned — exact terminology used>],
   "strengths": [<1-3 specific communication strengths observed in this session>],
-  "growth_edges": [<1-3 specific areas where communication could improve, based on this session>]
+  "growth_edges": [<1-3 specific areas where communication could improve, based on this session>],
+  "reasoning_examples": [<1-3 short direct quotes showing the speaker explaining WHY they did something, or empty array if none>]
 }
 
 TRANSCRIPT:
@@ -643,7 +906,7 @@ async function extractInsights(recordingId) {
   const existing = db.prepare('SELECT id FROM profile_insights WHERE recording_id = ?').get(recordingId);
   if (existing) return;
 
-  const transcript = fs.readFileSync(rec.transcript_path, 'utf-8');
+  const transcript = decryptFileToString(rec.transcript_path);
   if (!transcript.trim()) return;
 
   try {
@@ -652,8 +915,8 @@ async function extractInsights(recordingId) {
     const data = JSON.parse(cleaned);
 
     db.prepare(`
-      INSERT INTO profile_insights (recording_id, created_at, filler_count, self_corrections, hedging_count, confidence_score, topics, concepts, strengths, growth_edges, raw_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO profile_insights (recording_id, created_at, filler_count, self_corrections, hedging_count, confidence_score, reasoning_density, topics, concepts, strengths, growth_edges, raw_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       recordingId,
       Date.now(),
@@ -661,6 +924,7 @@ async function extractInsights(recordingId) {
       data.self_corrections || 0,
       data.hedging_count || 0,
       data.confidence_score || 0,
+      data.reasoning_density || 0,
       JSON.stringify(data.topics || []),
       JSON.stringify(data.concepts || []),
       JSON.stringify(data.strengths || []),
@@ -703,12 +967,35 @@ async function transcribeAudio(wavPath) {
   const apiKey = getOpenAIKey();
   if (!apiKey) throw new Error('OpenAI API key not configured. Add it in Administration.');
 
+  // Decrypt if needed — Whisper needs the raw WAV
+  let actualPath = wavPath;
+  let tempDecrypted = null;
+  if (isEncryptedFile(wavPath)) {
+    const buf = decryptFileToBuffer(wavPath);
+    if (!buf) throw new Error('Could not decrypt audio file');
+    tempDecrypted = wavPath + '.tmp_dec.wav';
+    fs.writeFileSync(tempDecrypted, buf);
+    actualPath = tempDecrypted;
+  }
+
+  const stat = fs.statSync(actualPath);
+  const MAX_SIZE = 24 * 1024 * 1024;
+
+  if (stat.size > MAX_SIZE) {
+    const result = await transcribeChunked(actualPath, apiKey, wavPath);
+    if (tempDecrypted) try { secureDelete(tempDecrypted); } catch (_) {}
+    encryptIfEnabled(result);
+    const jsonPath = result.replace(/\.txt$/, '.json');
+    if (fs.existsSync(jsonPath)) encryptIfEnabled(jsonPath);
+    return result;
+  }
+
   let result;
   try {
     const client = new OpenAI({ apiKey });
     result = await client.audio.transcriptions.create({
       model: 'whisper-1',
-      file: fs.createReadStream(wavPath),
+      file: fs.createReadStream(actualPath),
       response_format: 'verbose_json',
       timestamp_granularities: ['segment'],
     });
@@ -721,14 +1008,111 @@ async function transcribeAudio(wavPath) {
     throw err;
   }
 
+  if (tempDecrypted) try { secureDelete(tempDecrypted); } catch (_) {}
+
   const txtPath = wavPath.replace(/\.wav$/, '.txt');
   fs.writeFileSync(txtPath, result.text, 'utf-8');
+  encryptIfEnabled(txtPath);
 
   const jsonPath = wavPath.replace(/\.wav$/, '.json');
-  const segments = (result.segments || []).map((s) => ({ start: s.start, end: s.end, text: s.text }));
+  const segments = (result.segments || []).map((s) => ({
+    start: s.start,
+    end: s.end,
+    text: s.text,
+    no_speech_prob: s.no_speech_prob ?? null,
+    avg_logprob: s.avg_logprob ?? null,
+    compression_ratio: s.compression_ratio ?? null,
+  }));
   fs.writeFileSync(jsonPath, JSON.stringify(segments, null, 2), 'utf-8');
+  encryptIfEnabled(jsonPath);
 
   return txtPath;
+}
+
+async function transcribeChunked(wavPath, apiKey, outputBasePath) {
+  const outBase = outputBasePath || wavPath;
+  const CHUNK_DURATION = 600; // 10 minutes in seconds
+  const tempDir = path.join(app.getPath('temp'), `mnemori-chunks-${Date.now()}`);
+  fs.mkdirSync(tempDir, { recursive: true });
+
+  try {
+    // Get total duration via ffprobe
+    const duration = await new Promise((resolve) => {
+      const proc = spawn(FFMPEG, ['-i', wavPath, '-f', 'null', '-']);
+      let stderr = '';
+      proc.stderr.on('data', (d) => { stderr += d.toString(); });
+      proc.on('close', () => {
+        const match = stderr.match(/Duration:\s*(\d+):(\d+):(\d+)/);
+        if (match) resolve(parseInt(match[1]) * 3600 + parseInt(match[2]) * 60 + parseInt(match[3]));
+        else resolve(0);
+      });
+    });
+
+    if (duration === 0) throw new Error('Could not determine audio duration for chunking');
+
+    const chunkCount = Math.ceil(duration / CHUNK_DURATION);
+    const chunkPaths = [];
+
+    for (let i = 0; i < chunkCount; i++) {
+      const startSec = i * CHUNK_DURATION;
+      const chunkPath = path.join(tempDir, `chunk_${i}.wav`);
+      chunkPaths.push(chunkPath);
+
+      await new Promise((resolve, reject) => {
+        const args = ['-y', '-i', wavPath, '-ss', String(startSec), '-t', String(CHUNK_DURATION), '-ac', '1', '-ar', '16000', chunkPath];
+        const proc = spawn(FFMPEG, args);
+        proc.on('error', reject);
+        proc.on('close', (code) => code === 0 ? resolve() : reject(new Error(`ffmpeg chunk split exited with code ${code}`)));
+      });
+    }
+
+    const client = new OpenAI({ apiKey });
+    let fullText = '';
+    let allSegments = [];
+
+    for (let i = 0; i < chunkPaths.length; i++) {
+      mainWindow?.webContents.send('pipeline:progress', { stage: 'transcribing', chunk: i + 1, total: chunkPaths.length });
+
+      const result = await client.audio.transcriptions.create({
+        model: 'whisper-1',
+        file: fs.createReadStream(chunkPaths[i]),
+        response_format: 'verbose_json',
+        timestamp_granularities: ['segment'],
+      });
+
+      const offset = i * CHUNK_DURATION;
+      fullText += (fullText ? ' ' : '') + result.text;
+
+      const chunkSegments = (result.segments || []).map((s) => ({
+        start: s.start + offset,
+        end: s.end + offset,
+        text: s.text,
+        no_speech_prob: s.no_speech_prob ?? null,
+        avg_logprob: s.avg_logprob ?? null,
+        compression_ratio: s.compression_ratio ?? null,
+      }));
+      allSegments = allSegments.concat(chunkSegments);
+    }
+
+    const txtPath = outBase.replace(/\.wav$/, '.txt');
+    fs.writeFileSync(txtPath, fullText, 'utf-8');
+
+    const jsonPath = outBase.replace(/\.wav$/, '.json');
+    fs.writeFileSync(jsonPath, JSON.stringify(allSegments, null, 2), 'utf-8');
+
+    return txtPath;
+  } finally {
+    // Secure-delete chunk files (zero-fill overwrite) — audio content should not persist in temp
+    try {
+      const remaining = fs.readdirSync(tempDir);
+      for (const f of remaining) {
+        secureDelete(path.join(tempDir, f));
+      }
+      fs.rmdirSync(tempDir);
+    } catch (_) {
+      try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch (_) {}
+    }
+  }
 }
 
 async function generateWithClaude(text, mode, customPrompt = null, screenshotContext = null) {
@@ -805,7 +1189,7 @@ function buildScreenshotContext(recordingId, segments) {
   for (const ss of screenshots) {
     if (!ss.file_path || !fs.existsSync(ss.file_path)) continue;
 
-    const base64 = fs.readFileSync(ss.file_path).toString('base64');
+    const base64 = decryptFileToBuffer(ss.file_path).toString('base64');
     const tSec = ss.timestamp_ms / 1000;
 
     let context = '';
@@ -1056,6 +1440,11 @@ async function doStopRecording() {
     auditLog('recording:error', id, 'no video file produced');
   }
 
+  if (status === 'recorded') {
+    encryptIfEnabled(rec.video_path);
+    encryptIfEnabled(rec.audio_path);
+  }
+
   db.prepare('UPDATE recordings SET duration_seconds = ?, status = ? WHERE id = ?').run(duration, status, id);
 
   activeRecordingId = null;
@@ -1095,6 +1484,7 @@ async function captureScreenshot() {
 
     const pngBuffer = sources[0].thumbnail.toPNG();
     fs.writeFileSync(filePath, pngBuffer);
+    encryptIfEnabled(filePath);
 
     db.prepare(
       'INSERT INTO screenshots (recording_id, timestamp_ms, file_path, created_at) VALUES (?, ?, ?, ?)'
@@ -1126,7 +1516,7 @@ async function runAutoPipeline(recordingId) {
     db.prepare('UPDATE recordings SET transcript_path = ?, status = ? WHERE id = ?')
       .run(transcriptPath, 'transcribed', recordingId);
     mainWindow?.webContents.send('recordings:changed');
-    const transcriptText = fs.readFileSync(transcriptPath, 'utf-8');
+    const transcriptText = decryptFileToString(transcriptPath);
     indexTranscript(recordingId, transcriptText);
     auditLog('pipeline:auto-transcribe', recordingId, 'success');
     if (getSetting('conceptsAutoExtract') === 'true' && getSetting('policyConceptsDisabled') !== 'true') {
@@ -1141,12 +1531,20 @@ async function runAutoPipeline(recordingId) {
       }
     } catch (_) {}
 
-    const autoMode = getSetting('autoGenerateMode');
+    // Determine artifact mode: project default > global setting
+    let autoMode = getSetting('autoGenerateMode');
+    if (rec.project) {
+      const proj = db.prepare('SELECT default_artifact_type FROM projects WHERE name = ?').get(rec.project);
+      if (proj && proj.default_artifact_type) {
+        autoMode = proj.default_artifact_type;
+      }
+    }
+
     if (autoMode) {
       let autoSegments = [];
       const autoJsonPath = rec.audio_path?.replace(/\.wav$/, '.json');
       if (autoJsonPath && fs.existsSync(autoJsonPath)) {
-        try { autoSegments = JSON.parse(fs.readFileSync(autoJsonPath, 'utf-8')); } catch (_) {}
+        try { autoSegments = JSON.parse(decryptFileToString(autoJsonPath)); } catch (_) {}
       }
       const autoSsContext = buildScreenshotContext(recordingId, autoSegments);
 
@@ -1174,11 +1572,97 @@ async function runAutoPipeline(recordingId) {
         auditLog('pipeline:auto-generate', recordingId, `mode=${displayMode}`);
       }
     }
+
+    // Run decay detection in background if recording has a project and user opted in
+    if (rec.project && getSetting('decayDetectionEnabled') === 'true') {
+      checkDecay(recordingId, transcriptText).catch(() => {});
+    }
   } catch (err) {
     db.prepare('UPDATE recordings SET status = ? WHERE id = ?').run('error', recordingId);
     mainWindow?.webContents.send('recordings:changed');
     auditLog('pipeline:auto-error', recordingId, err.message);
   }
+}
+
+async function checkDecay(recordingId, transcriptText) {
+  const rec = db.prepare('SELECT * FROM recordings WHERE id = ?').get(recordingId);
+  if (!rec || !rec.project) return;
+
+  // Find existing artifacts in the same project (from other recordings)
+  const existingArtifacts = db.prepare(`
+    SELECT a.* FROM artifacts a
+    JOIN recordings r ON r.id = a.recording_id
+    WHERE r.project = ? AND r.id != ?
+    ORDER BY a.created_at DESC
+  `).all(rec.project, recordingId);
+
+  if (existingArtifacts.length === 0) return;
+
+  // Check the most recent artifact per mode
+  const checked = new Set();
+  for (const artifact of existingArtifacts) {
+    if (checked.has(artifact.mode)) continue;
+    checked.add(artifact.mode);
+
+    // Skip custom prompts and titles
+    if (artifact.mode === 'title' || artifact.mode.startsWith('custom:')) continue;
+
+    try {
+      const prompt = DECAY_CHECK_PROMPT
+        .replace('{artifact}', artifact.content.slice(0, 4000))
+        .replace('{transcript}', transcriptText.slice(0, 6000));
+
+      const response = await generateWithClaude('', null, prompt);
+      const parsed = JSON.parse(response);
+
+      if (parsed.has_divergence) {
+        db.prepare(
+          'INSERT INTO decay_alerts (recording_id, artifact_id, divergence_summary, changes_json, status, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+        ).run(recordingId, artifact.id, parsed.summary, JSON.stringify(parsed.changes || []), 'active', Date.now());
+        mainWindow?.webContents.send('recordings:changed');
+        auditLog('decay:detected', recordingId, `artifact=${artifact.id} — ${parsed.summary}`);
+      }
+    } catch (_) {}
+
+    // Only check up to 3 modes to limit API calls
+    if (checked.size >= 3) break;
+  }
+}
+
+async function generateAllFormats(recordingId, modes) {
+  const rec = db.prepare('SELECT * FROM recordings WHERE id = ?').get(recordingId);
+  if (!rec || !rec.transcript_path) throw new Error('No transcript available');
+
+  const transcriptText = decryptFileToString(rec.transcript_path);
+  let segments = [];
+  const jsonPath = rec.audio_path?.replace(/\.wav$/, '.json');
+  if (jsonPath && fs.existsSync(jsonPath)) {
+    try { segments = JSON.parse(decryptFileToString(jsonPath)); } catch (_) {}
+  }
+  const ssContext = buildScreenshotContext(recordingId, segments);
+
+  const results = [];
+  const errors = [];
+
+  for (let i = 0; i < modes.length; i++) {
+    const mode = modes[i];
+    mainWindow?.webContents.send('pipeline:progress', { stage: 'generating', chunk: i + 1, total: modes.length, mode });
+
+    try {
+      const output = await generateWithClaude(transcriptText, mode, null, ssContext);
+      db.prepare(
+        'INSERT INTO artifacts (recording_id, mode, content, created_at) VALUES (?, ?, ?, ?)'
+      ).run(recordingId, mode, output, Date.now());
+      indexArtifact(recordingId, mode, output);
+      mainWindow?.webContents.send('recordings:changed');
+      results.push(mode);
+      auditLog('pipeline:generate', recordingId, `mode=${mode} (batch)`);
+    } catch (err) {
+      errors.push({ mode, error: err.message });
+    }
+  }
+
+  return { ok: true, count: results.length, errors };
 }
 
 let currentRecordingHotkey = null;
@@ -1211,7 +1695,7 @@ function registerHotkey(accelerator) {
 }
 
 protocol.registerSchemesAsPrivileged([
-  { scheme: 'media', privileges: { standard: true, stream: true, supportFetchAPI: true } },
+  { scheme: 'media', privileges: { standard: true, secure: true, stream: true, supportFetchAPI: true, corsEnabled: true } },
 ]);
 
 app.whenReady().then(() => {
@@ -1227,12 +1711,39 @@ app.whenReady().then(() => {
     }
 
     try {
-      const stat = fs.statSync(resolved);
       const ext = path.extname(resolved).toLowerCase();
       const mime = { '.mp4': 'video/mp4', '.webm': 'video/webm', '.wav': 'audio/wav', '.txt': 'text/plain; charset=utf-8', '.json': 'application/json', '.png': 'image/png' };
       const contentType = mime[ext] || 'application/octet-stream';
-      const rangeHeader = request.headers.get('Range');
+      const encrypted = isEncryptedFile(resolved);
 
+      if (encrypted) {
+        const data = decryptFileToBuffer(resolved);
+        if (!data) return new Response('Decryption failed', { status: 500 });
+        const rangeHeader = request.headers.get('Range');
+        if (rangeHeader) {
+          const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
+          if (match) {
+            const start = parseInt(match[1], 10);
+            const end = match[2] ? parseInt(match[2], 10) : data.length - 1;
+            const chunk = end - start + 1;
+            return new Response(data.slice(start, start + chunk), {
+              status: 206,
+              headers: {
+                'Content-Type': contentType,
+                'Content-Range': `bytes ${start}-${end}/${data.length}`,
+                'Content-Length': String(chunk),
+                'Accept-Ranges': 'bytes',
+              },
+            });
+          }
+        }
+        return new Response(data, {
+          headers: { 'Content-Type': contentType, 'Content-Length': String(data.length), 'Accept-Ranges': 'bytes' },
+        });
+      }
+
+      const stat = fs.statSync(resolved);
+      const rangeHeader = request.headers.get('Range');
       if (rangeHeader) {
         const match = rangeHeader.match(/bytes=(\d+)-(\d*)/);
         if (match) {
@@ -1257,11 +1768,7 @@ app.whenReady().then(() => {
 
       const data = fs.readFileSync(resolved);
       return new Response(data, {
-        headers: {
-          'Content-Type': contentType,
-          'Content-Length': String(stat.size),
-          'Accept-Ranges': 'bytes',
-        },
+        headers: { 'Content-Type': contentType, 'Content-Length': String(stat.size), 'Accept-Ranges': 'bytes' },
       });
     } catch (fsErr) {
       return new Response('Not found', { status: 404 });
@@ -1394,7 +1901,8 @@ ipcMain.handle('recording:screenshot', async () => {
 ipcMain.handle('recordings:list', () => {
   return db.prepare(`
     SELECT r.*,
-           (SELECT COUNT(*) FROM artifacts a WHERE a.recording_id = r.id) AS artifact_count
+           (SELECT COUNT(*) FROM artifacts a WHERE a.recording_id = r.id) AS artifact_count,
+           (SELECT pi.reasoning_density FROM profile_insights pi WHERE pi.recording_id = r.id LIMIT 1) AS reasoning_density
     FROM recordings r
     ORDER BY created_at DESC
   `).all();
@@ -1425,7 +1933,10 @@ ipcMain.handle('recordings:get', (_evt, id) => {
   const screenshots = db.prepare(
     'SELECT * FROM screenshots WHERE recording_id = ? ORDER BY timestamp_ms ASC'
   ).all(id);
-  return { ...recording, artifacts, screenshots };
+  const insights = db.prepare(
+    'SELECT reasoning_density FROM profile_insights WHERE recording_id = ? LIMIT 1'
+  ).get(id);
+  return { ...recording, artifacts, screenshots, reasoning_density: insights?.reasoning_density ?? null };
 });
 
 ipcMain.handle('recordings:delete', (_evt, id) => {
@@ -1441,6 +1952,7 @@ ipcMain.handle('recordings:delete', (_evt, id) => {
   for (const ss of ssFiles) { if (ss.file_path) secureDelete(ss.file_path); }
   const deleteAll = db.transaction(() => {
     db.prepare('DELETE FROM screenshots WHERE recording_id = ?').run(id);
+    db.prepare('DELETE FROM decay_alerts WHERE recording_id = ?').run(id);
     db.prepare('DELETE FROM artifacts WHERE recording_id = ?').run(id);
     db.prepare('DELETE FROM search_index WHERE recording_id = ?').run(id);
     db.prepare('DELETE FROM profile_insights WHERE recording_id = ?').run(id);
@@ -1481,7 +1993,7 @@ ipcMain.handle('pipeline:transcribe', async (_evt, id) => {
 
     // Auto-generate a succinct title from the transcript
     try {
-      const transcript = fs.readFileSync(transcriptPath, 'utf-8');
+      const transcript = decryptFileToString(transcriptPath);
       const newTitle = (await generateWithClaude(transcript, 'title')).trim();
       if (newTitle && newTitle.length < 100) {
         db.prepare('UPDATE recordings SET title = ? WHERE id = ?').run(newTitle, id);
@@ -1489,7 +2001,7 @@ ipcMain.handle('pipeline:transcribe', async (_evt, id) => {
       }
     } catch (_) {}
 
-    const transcriptText = fs.readFileSync(transcriptPath, 'utf-8');
+    const transcriptText = decryptFileToString(transcriptPath);
     indexTranscript(id, transcriptText);
     auditLog('pipeline:transcribe', id, 'success');
     if (getSetting('conceptsAutoExtract') === 'true') {
@@ -1519,12 +2031,12 @@ ipcMain.handle('pipeline:generate', async (_evt, id, mode, customPromptId) => {
   }
 
   try {
-    const transcript = fs.readFileSync(rec.transcript_path, 'utf-8');
+    const transcript = decryptFileToString(rec.transcript_path);
 
     let segments = [];
     const jsonPath = rec.audio_path?.replace(/\.wav$/, '.json');
     if (jsonPath && fs.existsSync(jsonPath)) {
-      try { segments = JSON.parse(fs.readFileSync(jsonPath, 'utf-8')); } catch (_) {}
+      try { segments = JSON.parse(decryptFileToString(jsonPath)); } catch (_) {}
     }
 
     const ssContext = mode !== 'title' ? buildScreenshotContext(id, segments) : null;
@@ -1538,6 +2050,83 @@ ipcMain.handle('pipeline:generate', async (_evt, id, mode, customPromptId) => {
     return { ok: true };
   } catch (err) {
     auditLog('pipeline:generate', id, `mode=${displayMode} error: ${err.message}`);
+    return { ok: false, error: err.message };
+  }
+});
+
+// ---- IPC: Generate All ----
+
+ipcMain.handle('pipeline:generateAll', async (_evt, id, modes) => {
+  if (isAuthGated()) return { ok: false, error: 'Sign in required' };
+  const rec = db.prepare('SELECT * FROM recordings WHERE id = ?').get(id);
+  if (!rec || !rec.transcript_path) return { ok: false, error: 'No transcript available' };
+
+  try {
+    const result = await generateAllFormats(id, modes);
+    return result;
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// ---- IPC: Decay Detection ----
+
+ipcMain.handle('decay:list', () => {
+  return db.prepare(`
+    SELECT da.*, a.mode AS artifact_mode, r.title AS recording_title, r.project
+    FROM decay_alerts da
+    JOIN artifacts a ON a.id = da.artifact_id
+    JOIN recordings r ON r.id = da.recording_id
+    WHERE da.status = 'active'
+    ORDER BY da.created_at DESC
+  `).all();
+});
+
+ipcMain.handle('decay:listForRecording', (_evt, recordingId) => {
+  return db.prepare(`
+    SELECT da.*, a.mode AS artifact_mode, a.content AS artifact_content
+    FROM decay_alerts da
+    JOIN artifacts a ON a.id = da.artifact_id
+    WHERE da.recording_id = ?
+    ORDER BY da.created_at DESC
+  `).all(recordingId);
+});
+
+ipcMain.handle('decay:dismiss', (_evt, alertId) => {
+  db.prepare('UPDATE decay_alerts SET status = ? WHERE id = ?').run('dismissed', alertId);
+  mainWindow?.webContents.send('recordings:changed');
+  auditLog('decay:dismiss', String(alertId));
+  return { ok: true };
+});
+
+ipcMain.handle('decay:update', async (_evt, alertId) => {
+  const alert = db.prepare('SELECT * FROM decay_alerts WHERE id = ?').get(alertId);
+  if (!alert) return { ok: false, error: 'Alert not found' };
+
+  const rec = db.prepare('SELECT * FROM recordings WHERE id = ?').get(alert.recording_id);
+  if (!rec || !rec.transcript_path) return { ok: false, error: 'Transcript not available' };
+
+  const artifact = db.prepare('SELECT * FROM artifacts WHERE id = ?').get(alert.artifact_id);
+  if (!artifact) return { ok: false, error: 'Original artifact not found' };
+
+  try {
+    const transcriptText = decryptFileToString(rec.transcript_path);
+    let segments = [];
+    const jsonPath = rec.audio_path?.replace(/\.wav$/, '.json');
+    if (jsonPath && fs.existsSync(jsonPath)) {
+      try { segments = JSON.parse(decryptFileToString(jsonPath)); } catch (_) {}
+    }
+    const ssContext = buildScreenshotContext(rec.id, segments);
+    const output = await generateWithClaude(transcriptText, artifact.mode, null, ssContext);
+
+    db.prepare('UPDATE artifacts SET content = ?, created_at = ? WHERE id = ?')
+      .run(output, Date.now(), artifact.id);
+    db.prepare('UPDATE decay_alerts SET status = ? WHERE id = ?').run('resolved', alertId);
+    indexArtifact(artifact.recording_id, artifact.mode, output);
+    mainWindow?.webContents.send('recordings:changed');
+    auditLog('decay:update', String(alertId), `regenerated artifact ${artifact.id}`);
+    return { ok: true };
+  } catch (err) {
     return { ok: false, error: err.message };
   }
 });
@@ -1615,10 +2204,10 @@ ipcMain.handle('prompts:setDefault', (_evt, id) => {
 
 // ---- IPC: Settings ----
 
-const ALLOWED_SETTINGS = new Set(['audioDevice', 'openaiApiKey', 'anthropicApiKey', 'retentionDays', 'clerkUserId', 'clerkUserRole', 'globalHotkey', 'autoTranscribe', 'autoGenerateMode', 'conceptsAutoExtract', 'storagePath', 'policyAutoPipelineDisabled', 'policyConceptsDisabled', 'remoteRequireAuth', 'remoteMessage']);
+const ALLOWED_SETTINGS = new Set(['audioDevice', 'openaiApiKey', 'anthropicApiKey', 'retentionDays', 'clerkUserId', 'clerkUserRole', 'globalHotkey', 'autoTranscribe', 'autoGenerateMode', 'conceptsAutoExtract', 'decayDetectionEnabled', 'storagePath', 'policyAutoPipelineDisabled', 'policyConceptsDisabled', 'remoteRequireAuth', 'remoteMessage', 'encryptionAtRest']);
 
 // Settings that require owner or admin role to modify
-const ADMIN_ONLY_SETTINGS = new Set(['openaiApiKey', 'anthropicApiKey', 'retentionDays', 'storagePath', 'policyAutoPipelineDisabled', 'policyConceptsDisabled']);
+const ADMIN_ONLY_SETTINGS = new Set(['openaiApiKey', 'anthropicApiKey', 'retentionDays', 'storagePath', 'policyAutoPipelineDisabled', 'policyConceptsDisabled', 'encryptionAtRest']);
 
 function getCurrentRole() {
   const role = getSetting('clerkUserRole', 'owner');
@@ -1673,6 +2262,29 @@ ipcMain.handle('audit:list', (_evt, limit = 200) => {
   return db.prepare('SELECT * FROM audit_log ORDER BY timestamp DESC LIMIT ?').all(safeLimit);
 });
 
+ipcMain.handle('audit:verify', () => {
+  if (getCurrentRole() === 'member') {
+    return { ok: false, error: 'Insufficient permissions' };
+  }
+  const rows = db.prepare('SELECT * FROM audit_log ORDER BY id ASC').all();
+  let prevHash = '';
+  let valid = 0;
+  let broken = [];
+  for (const row of rows) {
+    if (!row.prev_hash) { valid++; prevHash = ''; continue; }
+    const expected = crypto.createHash('sha256')
+      .update(`${row.timestamp}|${row.action}|${row.target || ''}|${row.detail || ''}|${prevHash}`)
+      .digest('hex');
+    if (row.prev_hash === expected) {
+      valid++;
+    } else {
+      broken.push({ id: row.id, timestamp: row.timestamp, action: row.action });
+    }
+    prevHash = row.prev_hash;
+  }
+  return { ok: true, total: rows.length, valid, broken };
+});
+
 ipcMain.handle('settings:listAudioDevices', async () => {
   if (isMac) {
     const devices = await getAvfoundationDevices();
@@ -1722,6 +2334,18 @@ ipcMain.handle('projects:delete', (_evt, id) => {
   return { ok: true };
 });
 
+ipcMain.handle('projects:update', (_evt, id, updates) => {
+  const fields = [];
+  const values = [];
+  for (const key of ['name', 'description', 'default_artifact_type']) {
+    if (key in updates) { fields.push(`${key} = ?`); values.push(updates[key]); }
+  }
+  if (fields.length === 0) return { ok: true };
+  values.push(id);
+  db.prepare(`UPDATE projects SET ${fields.join(', ')} WHERE id = ?`).run(...values);
+  return { ok: true };
+});
+
 ipcMain.handle('projects:get', (_evt, id) => {
   const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
   if (!project) return null;
@@ -1732,7 +2356,15 @@ ipcMain.handle('projects:get', (_evt, id) => {
     WHERE r.project = ?
     ORDER BY created_at DESC
   `).all(project.name);
-  return { ...project, recordings };
+  const decayAlerts = db.prepare(`
+    SELECT da.*, a.mode AS artifact_mode
+    FROM decay_alerts da
+    JOIN artifacts a ON a.id = da.artifact_id
+    WHERE da.recording_id IN (SELECT r2.id FROM recordings r2 WHERE r2.project = ?)
+    AND da.status = 'active'
+    ORDER BY da.created_at DESC
+  `).all(project.name);
+  return { ...project, recordings, decayAlerts };
 });
 
 ipcMain.handle('projects:generateSummary', async (_evt, projectId) => {
@@ -1752,7 +2384,7 @@ ipcMain.handle('projects:generateSummary', async (_evt, projectId) => {
   let combined = '';
   for (const rec of recordings) {
     if (!rec.transcript_path || !fs.existsSync(rec.transcript_path)) continue;
-    const text = fs.readFileSync(rec.transcript_path, 'utf-8');
+    const text = decryptFileToString(rec.transcript_path);
     const date = new Date(rec.created_at).toLocaleString();
     combined += `\n--- SESSION: "${rec.title}" (${date}) ---\n${text}\n`;
   }
@@ -1855,7 +2487,7 @@ ipcMain.handle('system:copyArtifactRich', (_evt, markdownText, injectedMarkdown,
     const resolved = path.resolve(ss.filePath);
     if (!resolved.startsWith(defaultRecordingsDir) && !resolved.startsWith(getRecordingsDir())) continue;
     if (!fs.existsSync(resolved)) continue;
-    const base64 = fs.readFileSync(resolved).toString('base64');
+    const base64 = decryptFileToBuffer(resolved).toString('base64');
     const mediaUrl = `media://localhost/${ss.filePath.replace(/\\/g, '/')}`;
     htmlSource = htmlSource.split(mediaUrl).join(`data:image/png;base64,${base64}`);
   }
@@ -1905,7 +2537,8 @@ ipcMain.handle('system:saveArtifactBundle', async (_evt, defaultName, content, s
       if (!fs.existsSync(resolved)) continue;
 
       const destName = `screenshot_${ss.label.replace(':', '_')}.png`;
-      fs.copyFileSync(resolved, path.join(imagesDir, destName));
+      const imgBuf = decryptFileToBuffer(resolved);
+      fs.writeFileSync(path.join(imagesDir, destName), imgBuf);
       imageCount++;
 
       const mediaUrl = `media://localhost/${ss.filePath.replace(/\\/g, '/')}`;
@@ -1925,7 +2558,8 @@ ipcMain.handle('screenshot:copy', (_evt, filePath) => {
     return { ok: false, error: 'Invalid path' };
   }
   if (!fs.existsSync(resolved)) return { ok: false, error: 'File not found' };
-  const img = nativeImage.createFromPath(resolved);
+  const imgBuf = decryptFileToBuffer(resolved);
+  const img = nativeImage.createFromBuffer(imgBuf);
   clipboard.writeImage(img);
   return { ok: true };
 });
@@ -1941,7 +2575,8 @@ ipcMain.handle('screenshot:save', async (_evt, filePath) => {
     filters: [{ name: 'PNG Image', extensions: ['png'] }, { name: 'All Files', extensions: ['*'] }],
   });
   if (result.canceled || !result.filePath) return { ok: false, error: 'Cancelled' };
-  fs.copyFileSync(resolved, result.filePath);
+  const imgBuf = decryptFileToBuffer(resolved);
+  fs.writeFileSync(result.filePath, imgBuf);
   auditLog('file:export', result.filePath, 'screenshot');
   return { ok: true };
 });
@@ -2097,6 +2732,7 @@ const GOAL_METRIC_COLUMNS = {
   self_corrections: 'self_corrections',
   hedging_count: 'hedging_count',
   confidence_score: 'confidence_score',
+  reasoning_density: 'reasoning_density',
 };
 
 ipcMain.handle('goals:history', (_evt, metric) => {
@@ -2221,6 +2857,34 @@ ipcMain.handle('settings:setStoragePath', (_evt, newPath) => {
   return { ok: true };
 });
 
+// ---- IPC: Encryption at rest ----
+
+ipcMain.handle('encryption:status', () => {
+  const enabled = isEncryptionEnabled();
+  const available = safeStorage.isEncryptionAvailable();
+  const keyExists = fs.existsSync(path.join(userDataDir, '.encryption-key'));
+  return { enabled, available, keyExists };
+});
+
+ipcMain.handle('encryption:enable', async () => {
+  const role = getCurrentRole();
+  if (role === 'member') return { ok: false, error: 'Insufficient permissions' };
+  if (!safeStorage.isEncryptionAvailable()) return { ok: false, error: 'OS encryption not available' };
+
+  const result = migrateEncryption((current, total) => {
+    mainWindow?.webContents.send('encryption:progress', { current, total });
+  });
+  return result;
+});
+
+ipcMain.handle('encryption:disable', () => {
+  const role = getCurrentRole();
+  if (role === 'member') return { ok: false, error: 'Insufficient permissions' };
+  setSetting('encryptionAtRest', 'false');
+  auditLog('encryption:disabled', null, 'new files will not be encrypted');
+  return { ok: true };
+});
+
 // ---- Auth (browser-based Clerk sign-in) ----
 
 ipcMain.handle('auth:sign-in', () => {
@@ -2234,6 +2898,7 @@ ipcMain.handle('auth:sign-in', () => {
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,
+        sandbox: true,
       },
     });
 

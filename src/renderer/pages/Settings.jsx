@@ -98,6 +98,7 @@ export default function Settings() {
   const [autoGenerateMode, setAutoGenerateMode] = useState('');
   const [conceptsAutoExtract, setConceptsAutoExtract] = useState(false);
   const [pipelineDisabled, setPipelineDisabled] = useState(false);
+  const [decayDetection, setDecayDetection] = useState(false);
   const [customPrompts, setCustomPrompts] = useState([]);
   const [editingPrompt, setEditingPrompt] = useState(null);
   const [promptName, setPromptName] = useState('');
@@ -107,7 +108,7 @@ export default function Settings() {
 
   async function load() {
     try {
-      const [devices, dev, hk, at, agm, cae, ppd, promptsResult] = await Promise.all([
+      const [devices, dev, hk, at, agm, cae, ppd, dde, promptsResult] = await Promise.all([
         window.api.settings.listAudioDevices(),
         window.api.settings.get('audioDevice'),
         window.api.hotkey.get(),
@@ -115,6 +116,7 @@ export default function Settings() {
         window.api.settings.get('autoGenerateMode'),
         window.api.settings.get('conceptsAutoExtract'),
         window.api.settings.get('policyAutoPipelineDisabled'),
+        window.api.settings.get('decayDetectionEnabled'),
         window.api.prompts.list(),
       ]);
       setAudioDevices(devices);
@@ -124,6 +126,7 @@ export default function Settings() {
       setAutoGenerateMode(agm || '');
       setConceptsAutoExtract(cae === 'true');
       setPipelineDisabled(ppd === 'true');
+      setDecayDetection(dde === 'true');
       if (promptsResult.ok) setCustomPrompts(promptsResult.prompts);
     } catch (err) {
       toast('Failed to load settings', 'error');
@@ -201,6 +204,7 @@ export default function Settings() {
         window.api.settings.set('autoTranscribe', autoTranscribe ? 'true' : ''),
         window.api.settings.set('autoGenerateMode', autoTranscribe ? autoGenerateMode : ''),
         window.api.settings.set('conceptsAutoExtract', conceptsAutoExtract ? 'true' : ''),
+        window.api.settings.set('decayDetectionEnabled', decayDetection ? 'true' : ''),
       ]);
       toast('Settings saved');
       load();
@@ -385,6 +389,8 @@ export default function Settings() {
                           <option value="methodology">Methodology</option>
                           <option value="coaching">Coaching review</option>
                           <option value="notes">Cleaned notes</option>
+                          <option value="checklist">Checklist</option>
+                          <option value="executive_summary">Executive summary</option>
                           {customPrompts.map((p) => (
                             <option key={p.id} value={`custom:${p.id}`}>{p.name}</option>
                           ))}
@@ -402,6 +408,19 @@ export default function Settings() {
                       </label>
                       <p className="help" style={{ marginTop: 4, marginLeft: 26 }}>
                         Runs pattern analysis on each transcription for the Concepts dashboard.
+                      </p>
+                    </div>
+                    <div className="field" style={{ marginTop: 8 }}>
+                      <label style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                        <input
+                          type="checkbox"
+                          checked={decayDetection}
+                          onChange={(e) => setDecayDetection(e.target.checked)}
+                        />
+                        Detect outdated documentation
+                      </label>
+                      <p className="help" style={{ marginTop: 4, marginLeft: 26 }}>
+                        After transcription, compares new recordings against existing project artifacts to find outdated documentation. Sends artifact content to Anthropic for comparison.
                       </p>
                     </div>
                   </>
@@ -472,6 +491,59 @@ export default function Settings() {
                 + New prompt
               </button>
             )}
+          </div>
+
+          {/* ---- What Leaves Your Machine ---- */}
+          <div className="field-group">
+            <h3>What leaves your machine</h3>
+            <p className="help">
+              Mnemori keeps your recordings, transcripts, and artifacts on your local disk.
+              The following data is sent to external services only when you trigger or enable the feature.
+            </p>
+            <table className="transparency-table">
+              <thead>
+                <tr>
+                  <th>Data</th>
+                  <th>Destination</th>
+                  <th>When</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Audio (.wav)</td>
+                  <td>OpenAI Whisper API</td>
+                  <td>You click Transcribe or auto-transcribe is on</td>
+                </tr>
+                <tr>
+                  <td>Transcript text</td>
+                  <td>Anthropic Claude API</td>
+                  <td>You click Generate or auto-generate is on</td>
+                </tr>
+                <tr>
+                  <td>Screenshots (if captured)</td>
+                  <td>Anthropic Claude API</td>
+                  <td>Sent alongside transcript during generation</td>
+                </tr>
+                <tr>
+                  <td>Transcript text</td>
+                  <td>Anthropic Claude API</td>
+                  <td>You click Extract on the Concepts page or auto-extract is on</td>
+                </tr>
+                <tr>
+                  <td>Existing artifact content</td>
+                  <td>Anthropic Claude API</td>
+                  <td>Decay detection is enabled (opt-in) and a new recording is transcribed</td>
+                </tr>
+                <tr>
+                  <td>Profile survey answers</td>
+                  <td>Anthropic Claude API</td>
+                  <td>You generate a coaching readout on the Concepts page</td>
+                </tr>
+              </tbody>
+            </table>
+            <p className="help" style={{ marginTop: 8 }}>
+              Nothing is sent in the background unless you opt in. Video files never leave your machine.
+            </p>
           </div>
 
           <div>

@@ -25,6 +25,11 @@ export default function Admin() {
 
   const [auditEntries, setAuditEntries] = useState([]);
   const [showAudit, setShowAudit] = useState(false);
+  const [auditIntegrity, setAuditIntegrity] = useState(null);
+
+  const [encStatus, setEncStatus] = useState(null);
+  const [encMigrating, setEncMigrating] = useState(false);
+  const [encProgress, setEncProgress] = useState(null);
 
   const hasAccess = can('admin:access');
   useEffect(() => { if (hasAccess) load(); }, [hasAccess]);
@@ -33,14 +38,16 @@ export default function Admin() {
 
   async function load() {
     try {
-      const [ok, ak, rd, sp, ppd, pcd] = await Promise.all([
+      const [ok, ak, rd, sp, ppd, pcd, es] = await Promise.all([
         window.api.settings.get('openaiApiKey'),
         window.api.settings.get('anthropicApiKey'),
         window.api.settings.get('retentionDays'),
         window.api.storage.getPath(),
         window.api.settings.get('policyAutoPipelineDisabled'),
         window.api.settings.get('policyConceptsDisabled'),
+        window.api.encryption.status(),
       ]);
+      setEncStatus(es);
       setOpenaiMask(ok || '');
       setAnthropicMask(ak || '');
       setOpenaiKey('');
@@ -264,9 +271,24 @@ export default function Admin() {
               API keys are encrypted at rest using your operating system's secure credential store
               (Windows DPAPI / macOS Keychain).
             </p>
-            <button className="btn btn-ghost btn-sm" onClick={loadAudit}>
-              {showAudit ? 'Refresh audit log' : 'View audit log'}
-            </button>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+              <button className="btn btn-ghost btn-sm" onClick={loadAudit}>
+                {showAudit ? 'Refresh audit log' : 'View audit log'}
+              </button>
+              <button className="btn btn-ghost btn-sm" onClick={async () => {
+                const result = await window.api.audit.verify();
+                setAuditIntegrity(result);
+              }}>
+                Verify audit integrity
+              </button>
+              {auditIntegrity && auditIntegrity.ok && (
+                <span style={{ fontSize: 12, color: auditIntegrity.broken.length === 0 ? 'var(--moss)' : 'var(--ember)' }}>
+                  {auditIntegrity.broken.length === 0
+                    ? `Chain intact (${auditIntegrity.valid} of ${auditIntegrity.total} verified)`
+                    : `${auditIntegrity.broken.length} broken link${auditIntegrity.broken.length > 1 ? 's' : ''} detected`}
+                </span>
+              )}
+            </div>
             {showAudit && (
               <div className="audit-log" style={{ marginTop: 12 }}>
                 <table style={{ width: '100%', fontSize: 12, borderCollapse: 'collapse' }}>
@@ -297,6 +319,67 @@ export default function Admin() {
                   <div style={{ padding: 16, color: 'var(--ink-3)', textAlign: 'center' }}>
                     No audit entries yet
                   </div>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* ---- Encryption at rest ---- */}
+          <div className="field-group">
+            <h3>Encryption at rest</h3>
+            <p className="help">
+              Encrypts all recordings, transcripts, screenshots, and segment data with AES-256-GCM.
+              Each file gets a unique key derived from a master key stored in your operating system's
+              secure credential store. Protects data even if disk encryption (BitLocker/FileVault) is disabled.
+            </p>
+            {encStatus && !encStatus.available && (
+              <p className="help" style={{ color: 'var(--ember)' }}>
+                OS secure storage not available — encryption cannot be enabled on this system.
+              </p>
+            )}
+            {encStatus && encStatus.available && (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+                {encStatus.enabled ? (
+                  <>
+                    <span style={{ fontSize: 12, color: 'var(--moss)' }}>Enabled — new files are encrypted automatically</span>
+                    <button className="btn btn-ghost btn-sm" onClick={async () => {
+                      await window.api.encryption.disable();
+                      setEncStatus({ ...encStatus, enabled: false });
+                    }}>Disable</button>
+                  </>
+                ) : (
+                  <>
+                    <button className="btn btn-ghost btn-sm" disabled={encMigrating} onClick={async () => {
+                      setEncMigrating(true);
+                      setEncProgress(null);
+                      const unsub = window.api.encryption.onProgress((p) => setEncProgress(p));
+                      try {
+                        const result = await window.api.encryption.enable();
+                        if (result.ok) {
+                          toast(`Encryption enabled — ${result.encrypted} file${result.encrypted !== 1 ? 's' : ''} encrypted`);
+                          setEncStatus({ ...encStatus, enabled: true, keyExists: true });
+                        } else {
+                          toast(result.error, 'error');
+                        }
+                      } finally {
+                        unsub();
+                        setEncMigrating(false);
+                        setEncProgress(null);
+                      }
+                    }}>
+                      {encMigrating ? 'Encrypting...' : 'Enable encryption'}
+                    </button>
+                    {encProgress && (
+                      <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                        {encProgress.current} / {encProgress.total} files
+                      </span>
+                    )}
+                    {!encMigrating && (
+                      <span style={{ fontSize: 12, color: 'var(--ink-3)' }}>
+                        Encrypts all existing and future files
+                      </span>
+                    )}
+                  </>
                 )}
               </div>
             )}

@@ -26,7 +26,13 @@ contextBridge.exposeInMainWorld('api', {
   pipeline: {
     transcribe: (id) => ipcRenderer.invoke('pipeline:transcribe', id),
     generate: (id, mode, customPromptId) => ipcRenderer.invoke('pipeline:generate', id, mode, customPromptId),
+    generateAll: (id, modes) => ipcRenderer.invoke('pipeline:generateAll', id, modes),
     transcribeBlob: (buf) => ipcRenderer.invoke('pipeline:transcribeBlob', buf),
+    onProgress: (callback) => {
+      const listener = (_evt, data) => callback(data);
+      ipcRenderer.on('pipeline:progress', listener);
+      return () => ipcRenderer.removeListener('pipeline:progress', listener);
+    },
   },
   settings: {
     get: (key) => ipcRenderer.invoke('settings:get', key),
@@ -37,8 +43,15 @@ contextBridge.exposeInMainWorld('api', {
     list: () => ipcRenderer.invoke('projects:list'),
     create: (name, description) => ipcRenderer.invoke('projects:create', name, description),
     get: (id) => ipcRenderer.invoke('projects:get', id),
+    update: (id, updates) => ipcRenderer.invoke('projects:update', id, updates),
     remove: (id) => ipcRenderer.invoke('projects:delete', id),
     generateSummary: (id) => ipcRenderer.invoke('projects:generateSummary', id),
+  },
+  decay: {
+    list: () => ipcRenderer.invoke('decay:list'),
+    listForRecording: (recordingId) => ipcRenderer.invoke('decay:listForRecording', recordingId),
+    dismiss: (alertId) => ipcRenderer.invoke('decay:dismiss', alertId),
+    update: (alertId) => ipcRenderer.invoke('decay:update', alertId),
   },
   system: {
     openPath: (p) => ipcRenderer.invoke('system:openPath', p),
@@ -52,6 +65,17 @@ contextBridge.exposeInMainWorld('api', {
   },
   audit: {
     list: (limit) => ipcRenderer.invoke('audit:list', limit),
+    verify: () => ipcRenderer.invoke('audit:verify'),
+  },
+  encryption: {
+    status: () => ipcRenderer.invoke('encryption:status'),
+    enable: () => ipcRenderer.invoke('encryption:enable'),
+    disable: () => ipcRenderer.invoke('encryption:disable'),
+    onProgress: (callback) => {
+      const listener = (_evt, data) => callback(data);
+      ipcRenderer.on('encryption:progress', listener);
+      return () => ipcRenderer.removeListener('encryption:progress', listener);
+    },
   },
   hotkey: {
     get: () => ipcRenderer.invoke('hotkey:get'),

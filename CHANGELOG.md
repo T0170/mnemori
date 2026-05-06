@@ -4,6 +4,72 @@ All notable changes to Mnemori are documented here. Format follows [Keep a Chang
 
 ---
 
+## [0.6.1] — 2026-05-05
+
+### Added
+- **Encryption at rest (AES-256-GCM)** — All recordings, transcripts, screenshots, and segment data can now be encrypted with AES-256-GCM. Each file gets a unique key derived via HKDF from a master key stored in the OS secure credential store (Windows DPAPI / macOS Keychain). File format: 4-byte magic (`MNMR`) + version byte + 12-byte IV + 16-byte auth tag + ciphertext. Transparent decryption on read — video playback, transcript access, and export all work seamlessly. Enable via Admin → "Enable encryption" button. Migrates existing unencrypted files in-place with progress reporting.
+- **Encryption IPC handlers** — `encryption:status`, `encryption:enable`, `encryption:disable` handlers with role-based access control (admin/owner only).
+- **Admin encryption panel** — New "Encryption at rest" section in Administration page showing status, enable/disable controls, and migration progress indicator.
+
+### Changed
+- **Version bump** — 0.6.0 to 0.6.1.
+
+---
+
+## [0.6.0] — 2026-05-05
+
+### Added (enterprise hardening)
+- **Cryptographic audit log chaining** — Every audit log entry now includes a SHA-256 hash of the previous entry, creating a tamper-evident chain. If any entry is modified or deleted, the chain breaks and the tampering is detectable. New `audit:verify` IPC handler walks the full chain and reports integrity status. "Verify audit integrity" button added to the Admin page. Satisfies SOC 2 CC7.2 and ISO 27001 A.8.15.
+- **ffmpeg binary integrity verification** — On startup, the bundled ffmpeg binary's SHA-256 hash is compared against a known-good hash generated at build time (`ffmpeg-integrity.json`). Mismatches are logged to the audit trail. Build script `scripts/generate-ffmpeg-hash.js` computes the hash during CI.
+- **SBOM generation in CI** — CycloneDX Software Bill of Materials is now generated during every build and uploaded as a build artifact. Production dependency audit (`npm audit --omit=dev --audit-level=high`) added as a CI step.
+- **Code signing CI preparation** — Build workflow now supports code signing when certificates are provided via GitHub secrets (`CSC_LINK`, `CSC_KEY_PASSWORD` for Windows; `CSC_LINK_MAC`, `APPLE_ID`, `APPLE_TEAM_ID` for macOS). Auto-discovery is dynamically enabled only when secrets are present. `signingHashAlgorithms: ['sha256']` added to Windows build config.
+- **Incident Response Plan** — Formal incident response plan at `compliance/INCIDENT_RESPONSE.md`. Covers: roles and responsibilities, P1-P4 severity classification with response SLAs, detection sources, containment procedures per scenario, communication templates with GDPR notification timeline, post-mortem process.
+- **Data Processing Addendum (DPA)** — Draft DPA at `compliance/DPA.md` for enterprise customers. Covers: data flows, lawful basis, subprocessor list with data residency, data subject rights, security measures, breach notification, audit rights. Notes cross-border transfer mechanisms (SCCs) for EU customers.
+
+### Changed
+- **Electron 33 to 41** — Upgraded Electron runtime from v33 (18 known CVEs) to v41 (zero production vulnerabilities). All APIs compatible — no breaking changes.
+- **Auth window sandbox** — Auth BrowserWindow now runs with `sandbox: true` for consistency with main and overlay windows.
+- **Version bump** — package.json updated from 0.5.1 to 0.6.0.
+
+---
+
+## [0.5.1] — 2026-05-05
+
+### Added
+- **Library reasoning density indicator** — Each recording row in the Library shows a small colored dot indicating how much "why" reasoning the recording contains: thin (grey), moderate (soft ember), or rich (moss green). Hover for the exact percentage. Only appears for recordings with Concepts extraction data.
+- **Recording detail reasoning sidebar** — The recording detail sidebar now shows the reasoning density score with a labeled indicator (Thin/Moderate/Rich) and percentage when insight data is available.
+- **Project-level decay alerts** — The project detail view now shows active documentation decay alerts for all recordings in the project. Each alert shows the artifact mode, divergence summary, and a "View recording" link to investigate and resolve.
+- **Project decay data in API** — `projects:get` IPC handler now returns `decayAlerts` array with active decay alerts for all recordings in the project.
+- **Reasoning density in recording list** — `recordings:list` IPC handler now includes `reasoning_density` from profile insights for each recording.
+
+### Added (privacy hardening)
+- **Decay detection opt-in toggle** — Decay detection is now gated behind an explicit "Detect outdated documentation" checkbox in Settings (disabled by default). Help text explains that it sends artifact content to Anthropic. Previously ran automatically for any project-tagged recording.
+- **"What leaves your machine" transparency table** — New section at the bottom of the Settings page listing every external data flow: what data, where it goes, and what user action triggers it. Fulfills the core design principle of showing exactly what leaves the machine.
+- **Secure temp file deletion** — Auto-chunking temp WAV files are now securely deleted (zero-fill overwrite) rather than standard unlinked.
+
+### Changed
+- **CLAUDE.md updated** — Known limitations section corrected to reflect that auto-chunking removes the 90-minute recording ceiling.
+- **Version bump** — package.json updated from 0.5.0 to 0.5.1.
+
+---
+
+## [0.5.0] — 2026-05-05
+
+### Added
+- **Multi-format output** — Two new artifact modes: **Checklist** (numbered `- [ ]` action items) and **Executive summary** (3-8 sentence briefing for stakeholders). Both available as generation chips on every recording, as auto-pipeline defaults, and as project-level defaults.
+- **Generate all formats** — One-click button on the recording detail page generates all 6 artifact types (SOP, Methodology, Coaching, Notes, Checklist, Executive summary) sequentially from a single transcript. Progressive UI shows which format is generating. Exposed via `pipeline:generateAll` IPC handler.
+- **Documentation decay detection** — When you record yourself doing something that already has documentation in the same project, Mnemori compares the new transcript against existing artifacts. If the process has changed, a decay alert surfaces on the recording detail page with the divergence summary. One-click actions: **Update artifact** (regenerates from new recording) or **Dismiss**. Library page shows a banner when documents may be outdated. New `decay_alerts` table with full audit trail. Opt-in via Settings (disabled by default) — sends artifact content to Anthropic for comparison.
+- **Whisper auto-chunking** — Recordings longer than ~90 minutes (WAV files > 24MB) are automatically split into 10-minute chunks, transcribed sequentially, and merged with correct timestamp offsets. Progress indicator shows "Transcribing — chunk 2 of 4..." during multi-chunk transcription. Removes the previous file-size ceiling on recording length. Temp chunk files cleaned up in `try/finally`.
+- **Context-aware default artifact type** — Projects can now specify a default artifact type (e.g., Consulting project → Methodology, Training project → SOP). When auto-pipeline runs after recording, it checks the project's default before falling back to the global setting. Dropdown appears on the project detail page. New `projects:update` IPC handler.
+- **Low-confidence flagging in transcripts** — Whisper's segment-level confidence data (`no_speech_prob`, `avg_logprob`, `compression_ratio`) is now preserved in the segments JSON. Segments with low transcription confidence are rendered with reduced opacity and a dashed underline. Hover shows confidence percentage. A legend appears when low-confidence segments are present: "Dimmed segments may contain transcription errors." Existing recordings without confidence data render normally.
+- **Reasoning density scoring** — The Concepts extraction prompt now returns a `reasoning_density` score (0.0–1.0) measuring how much "why" reasoning a recording contains, plus `reasoning_examples` with direct quotes. Stored in `profile_insights` and available as a goal metric in the Concepts dashboard. Helps users learn to narrate more effectively.
+
+### Changed
+- **Version bump** — package.json updated from 0.3.5 to 0.5.0.
+- **Recording deletion cleanup** — Decay alerts are now cleaned up when a recording is deleted.
+
+---
+
 ## [0.3.5] — 2026-05-05
 
 ### Added

@@ -10,6 +10,8 @@ const MODES = [
   { id: 'methodology', label: 'Methodology' },
   { id: 'coaching', label: 'Coaching review' },
   { id: 'notes', label: 'Cleaned notes' },
+  { id: 'checklist', label: 'Checklist' },
+  { id: 'executive_summary', label: 'Executive summary' },
 ];
 
 function formatTimestamp(seconds) {
@@ -33,6 +35,8 @@ export default function RecordingDetail() {
   const [activeSegment, setActiveSegment] = useState(-1);
   const [showGallery, setShowGallery] = useState(false);
   const [customPrompts, setCustomPrompts] = useState([]);
+  const [decayAlerts, setDecayAlerts] = useState([]);
+  const [progress, setProgress] = useState(null);
 
   const videoRef = useRef(null);
   const transcriptRef = useRef(null);
@@ -43,8 +47,10 @@ export default function RecordingDetail() {
     load();
     loadProjects();
     loadCustomPrompts();
-    const unsub = window.api.recordings.onChanged(load);
-    return unsub;
+    loadDecayAlerts();
+    const unsub = window.api.recordings.onChanged(() => { load(); loadDecayAlerts(); });
+    const unsubProgress = window.api.pipeline.onProgress((data) => setProgress(data));
+    return () => { unsub(); unsubProgress(); };
   }, [id]);
 
   useEffect(() => {
@@ -63,6 +69,13 @@ export default function RecordingDetail() {
     try {
       const r = await window.api.prompts.list();
       if (r.ok) setCustomPrompts(r.prompts);
+    } catch (_) {}
+  }
+
+  async function loadDecayAlerts() {
+    try {
+      const alerts = await window.api.decay.listForRecording(id);
+      setDecayAlerts(alerts);
     } catch (_) {}
   }
 
@@ -135,6 +148,40 @@ export default function RecordingDetail() {
     setBusy(null);
     if (result.ok) toast(`${customPromptId ? 'Custom prompt' : mode} generated`);
     else toast(result.error, 'error');
+  }
+
+  async function generateAll() {
+    const modes = MODES.map((m) => m.id);
+    setBusy('generate-all');
+    const result = await window.api.pipeline.generateAll(id, modes);
+    setBusy(null);
+    setProgress(null);
+    if (result.ok) {
+      const msg = result.errors?.length > 0
+        ? `Generated ${result.count} formats (${result.errors.length} failed)`
+        : `Generated ${result.count} formats`;
+      toast(msg);
+    } else {
+      toast(result.error, 'error');
+    }
+  }
+
+  async function dismissDecay(alertId) {
+    await window.api.decay.dismiss(alertId);
+    toast('Alert dismissed');
+    loadDecayAlerts();
+  }
+
+  async function updateDecay(alertId) {
+    setBusy('decay-update');
+    const result = await window.api.decay.update(alertId);
+    setBusy(null);
+    if (result.ok) {
+      toast('Artifact updated from new recording');
+      loadDecayAlerts();
+    } else {
+      toast(result.error, 'error');
+    }
   }
 
   async function saveEdits() {
@@ -305,8 +352,16 @@ export default function RecordingDetail() {
                 <div className="pipeline-progress-bar" />
                 <span className="pipeline-progress-label">
                   {busy === 'transcribe'
-                    ? 'Transcribing audio — this may take a moment for longer recordings…'
-                    : `Generating ${busy}…`}
+                    ? (progress?.stage === 'transcribing'
+                      ? `Transcribing — chunk ${progress.chunk} of ${progress.total}…`
+                      : 'Transcribing audio — this may take a moment for longer recordings…')
+                    : busy === 'generate-all'
+                      ? (progress?.stage === 'generating'
+                        ? `Generating ${progress.mode} — ${progress.chunk} of ${progress.total}…`
+                        : 'Generating all formats…')
+                      : busy === 'decay-update'
+                        ? 'Updating artifact from new recording…'
+                        : `Generating ${busy}…`}
                 </span>
               </div>
             )}
@@ -335,9 +390,9 @@ export default function RecordingDetail() {
                         <span
                           key={`seg-${item.index}`}
                           data-seg={item.index}
-                          className={`transcript-seg${activeSegment === item.index ? ' transcript-seg-active' : ''}`}
+                          className={`transcript-seg${activeSegment === item.index ? ' transcript-seg-active' : ''}${(item.no_speech_prob != null && item.no_speech_prob > 0.5) || (item.avg_logprob != null && item.avg_logprob < -1.0) ? ' transcript-seg-low-conf' : ''}`}
                           onClick={() => seekTo(item.start)}
-                          title={`${formatTimestamp(item.start)} – ${formatTimestamp(item.end)}`}
+                          title={item.no_speech_prob != null ? `${formatTimestamp(item.start)} – ${formatTimestamp(item.end)} · confidence: ${item.avg_logprob != null ? Math.round((1 + item.avg_logprob) * 100) + '%' : '—'}` : `${formatTimestamp(item.start)} – ${formatTimestamp(item.end)}`}
                         >
                           <span className="transcript-seg-time">{formatTimestamp(item.start)}</span>
                           {item.text}
@@ -388,6 +443,44 @@ export default function RecordingDetail() {
               </>
             )}
 
+            {hasSegments && segments.some(s => (s.no_speech_prob != null && s.no_speech_prob > 0.5) || (s.avg_logprob != null && s.avg_logprob < -1.0)) && (
+              <div className="transcript-confidence-legend">
+                Dimmed segments may contain transcription errors
+              </div>
+            )}
+
+            {decayAlerts.filter(a => a.status === 'active').length > 0 && (
+              <div className="decay-alerts-section" style={{ marginTop: 24 }}>
+                <div className="section-heading">
+                  <span>Documentation <em>alerts</em></span>
+                </div>
+                {decayAlerts.filter(a => a.status === 'active').map((alert) => (
+                  <div key={alert.id} className="decay-alert">
+                    <div className="decay-alert-header">
+                      <span className="decay-alert-mode">{alert.artifact_mode}</span>
+                      <span className="decay-alert-label">may be outdated</span>
+                    </div>
+                    <p className="decay-alert-summary">{alert.divergence_summary}</p>
+                    <div className="decay-alert-actions">
+                      <button
+                        className="btn btn-primary btn-sm"
+                        disabled={busy}
+                        onClick={() => updateDecay(alert.id)}
+                      >
+                        Update artifact
+                      </button>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => dismissDecay(alert.id)}
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
             {recording.artifacts?.length > 0 && (
               <>
                 <div className="section-heading" style={{ marginTop: 32 }}>
@@ -434,6 +527,17 @@ export default function RecordingDetail() {
                 {formatDuration(recording.duration_seconds)} long
               </div>
             </div>
+
+            {recording.reasoning_density != null && (
+              <div className="panel-section">
+                <div className="panel-label">Reasoning</div>
+                <div className="panel-value" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span className={`reasoning-dot reasoning-${recording.reasoning_density >= 0.6 ? 'rich' : recording.reasoning_density >= 0.3 ? 'moderate' : 'thin'}`} />
+                  <span>{recording.reasoning_density >= 0.6 ? 'Rich' : recording.reasoning_density >= 0.3 ? 'Moderate' : 'Thin'}</span>
+                  <span style={{ color: 'var(--ink-4)', fontSize: 12 }}>{Math.round(recording.reasoning_density * 100)}%</span>
+                </div>
+              </div>
+            )}
 
             {editing ? (
               <>
@@ -490,6 +594,14 @@ export default function RecordingDetail() {
                 style={{ marginBottom: 8 }}
               >
                 {busy === 'transcribe' ? 'Transcribing…' : 'Transcribe audio'}
+              </button>
+              <button
+                className="btn btn-generate-all btn-block"
+                disabled={!canGenerate || busy}
+                onClick={generateAll}
+                style={{ marginBottom: 8 }}
+              >
+                {busy === 'generate-all' ? 'Generating all…' : 'Generate all formats'}
               </button>
               <div className="gen-chips">
                 {MODES.map((m) => (
