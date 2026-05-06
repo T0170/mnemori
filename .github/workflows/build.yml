@@ -82,7 +82,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Mnemori-Windows-Installer
-          path: dist/Mnemori Setup *.exe
+          path: release/Mnemori Setup *.exe
           if-no-files-found: error
 
       - name: Upload Windows portable
@@ -90,7 +90,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Mnemori-Windows-Portable
-          path: dist/Mnemori *.exe
+          path: release/Mnemori *.exe
           if-no-files-found: warn
 
       - name: Upload macOS DMG
@@ -98,7 +98,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: Mnemori-macOS-${{ matrix.arch }}
-          path: dist/*.dmg
+          path: release/*.dmg
           if-no-files-found: error
 
       - name: Upload SBOM

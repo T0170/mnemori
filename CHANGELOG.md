@@ -4,6 +4,16 @@ All notable changes to Mnemori are documented here. Format follows [Keep a Chang
 
 ---
 
+## [0.6.2] — 2026-05-06
+
+### Fixed
+- **macOS app failed to launch on first open** — `app.asar` was being recursively packed with its own previous build output, swelling to 940 MB and corrupting the asar offset table. Electron failed to parse `package.json` from the asar at startup and exited silently with code 1, presenting as "click Open Anyway → app crashes." Resolved by directing electron-builder output to `release/` so it no longer collides with the Vite renderer output in `dist/`. New asar size is ~23 MB.
+
+### Removed
+- **Redundant `build-mac-intel.yml` workflow** — Intel macOS is now built via the matrix in `build.yml`. The standalone workflow created a publish race condition.
+
+---
+
 ## [0.6.1] — 2026-05-05
 
 ### Added

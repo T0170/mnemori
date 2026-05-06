@@ -1,6 +1,6 @@
 {
   "name": "mnemori",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Spoken memory — narrate your screen, capture your reasoning, refine it into documentation and coaching",
   "author": "Third Feather Capital Inc",
   "license": "UNLICENSED",
@@ -23,6 +23,9 @@
   "build": {
     "appId": "com.mnemori.app",
     "productName": "Mnemori",
+    "directories": {
+      "output": "release"
+    },
     "publish": {
       "provider": "github",
       "owner": "T0170",
@@ -30,7 +33,15 @@
     },
     "files": [
       "src/main/**/*",
-      "dist/**/*"
+      "dist/**/*",
+      "!dist/mac/**",
+      "!dist/mac-*/**",
+      "!dist/win-unpacked/**",
+      "!dist/*.dmg",
+      "!dist/*.zip",
+      "!dist/*.exe",
+      "!dist/*.blockmap",
+      "!dist/*.yml"
     ],
     "asarUnpack": [
       "node_modules/ffmpeg-static/**",
