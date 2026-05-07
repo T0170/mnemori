@@ -4,6 +4,17 @@ All notable changes to Mnemori are documented here. Format follows [Keep a Chang
 
 ---
 
+## [0.6.3] — 2026-05-07
+
+### Fixed
+- **macOS Intel CI builds** — Replaced deprecated `macos-13` runner (perpetually queued) with `macos-latest` cross-compiling for x64. Intel builds now complete reliably.
+
+### Changed
+- **Re-enabled macOS notarization** — Apple Developer account provisioning has propagated. Builds are now notarized and stapled, so macOS users no longer need to bypass Gatekeeper.
+- **Version bump** — 0.6.2 to 0.6.3.
+
+---
+
 ## [0.6.2] — 2026-05-06
 
 ### Fixed

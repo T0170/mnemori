@@ -1,6 +1,6 @@
 {
   "name": "mnemori",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "description": "Spoken memory — narrate your screen, capture your reasoning, refine it into documentation and coaching",
   "author": "Third Feather Capital Inc",
   "license": "UNLICENSED",
@@ -87,7 +87,7 @@
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
-      "notarize": false
+      "notarize": true
     }
   },
   "dependencies": {
